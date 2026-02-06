@@ -133,23 +133,32 @@ fn encode_mp4(
     recording_dir: &std::path::Path,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
+
+    // All inputs first
     cmd.args(["-y", "-framerate"])
         .arg(params.fps.to_string())
         .args(["-i"])
-        .arg(frames_dir.join("frame_%08d.png").to_string_lossy().to_string())
-        .args(["-c:v", "libx264"])
+        .arg(frames_dir.join("frame_%08d.png").to_string_lossy().to_string());
+
+    // Add audio input if available and non-empty
+    let audio_path = recording_dir.join("audio.wav");
+    let has_audio = audio_path.exists()
+        && std::fs::metadata(&audio_path).map(|m| m.len() > 44).unwrap_or(false);
+    if has_audio {
+        cmd.args(["-i"])
+            .arg(audio_path.to_string_lossy().to_string());
+    }
+
+    // Output options (must come after all -i inputs)
+    cmd.args(["-c:v", "libx264"])
         .args(["-crf"])
         .arg(params.crf.to_string())
         .args(["-preset", "medium"])
         .args(["-pix_fmt", "yuv420p"])
         .args(["-movflags", "+faststart"]);
 
-    // Add audio if available
-    let audio_path = recording_dir.join("audio.wav");
-    if audio_path.exists() {
-        cmd.args(["-i"])
-            .arg(audio_path.to_string_lossy().to_string())
-            .args(["-c:a", "aac", "-b:a", "128k"]);
+    if has_audio {
+        cmd.args(["-c:a", "aac", "-b:a", "128k"]);
     }
 
     if let (Some(w), Some(h)) = (params.width, params.height) {
@@ -221,20 +230,30 @@ fn encode_webm(
     recording_dir: &std::path::Path,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
+
+    // All inputs first
     cmd.args(["-y", "-framerate"])
         .arg(params.fps.to_string())
         .args(["-i"])
-        .arg(frames_dir.join("frame_%08d.png").to_string_lossy().to_string())
-        .args(["-c:v", "libvpx-vp9"])
+        .arg(frames_dir.join("frame_%08d.png").to_string_lossy().to_string());
+
+    // Add audio input if available and non-empty
+    let audio_path = recording_dir.join("audio.wav");
+    let has_audio = audio_path.exists()
+        && std::fs::metadata(&audio_path).map(|m| m.len() > 44).unwrap_or(false);
+    if has_audio {
+        cmd.args(["-i"])
+            .arg(audio_path.to_string_lossy().to_string());
+    }
+
+    // Output options (must come after all -i inputs)
+    cmd.args(["-c:v", "libvpx-vp9"])
         .args(["-crf"])
         .arg(params.crf.to_string())
         .args(["-b:v", "0"]);
 
-    let audio_path = recording_dir.join("audio.wav");
-    if audio_path.exists() {
-        cmd.args(["-i"])
-            .arg(audio_path.to_string_lossy().to_string())
-            .args(["-c:a", "libopus"]);
+    if has_audio {
+        cmd.args(["-c:a", "libopus"]);
     }
 
     if let (Some(w), Some(h)) = (params.width, params.height) {

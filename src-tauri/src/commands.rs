@@ -46,21 +46,31 @@ pub fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
-    let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
-    if *rec_state != RecordingState::Recording && *rec_state != RecordingState::Paused {
-        return Err("Not recording".to_string());
-    }
+    // Check state and take session while holding locks briefly
+    let session = {
+        let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
+        if *rec_state != RecordingState::Recording && *rec_state != RecordingState::Paused {
+            return Err("Not recording".to_string());
+        }
+        *rec_state = RecordingState::Processing;
 
-    *rec_state = RecordingState::Processing;
+        let mut current = state.current_session.lock().map_err(|e| e.to_string())?;
+        current.take()
+    }; // Both locks released here
 
-    let mut current = state.current_session.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = current.take() {
+    if let Some(session) = session {
         let recording_id = session.id().to_string();
-        session.stop().map_err(|e| e.to_string())?;
 
+        // stop() sleeps 500ms and writes meta.json - do this without holding locks
+        if let Err(e) = session.stop() {
+            log::error!("Error during session stop: {}", e);
+        }
+
+        let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
         *rec_state = RecordingState::Idle;
         Ok(recording_id)
     } else {
+        let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
         *rec_state = RecordingState::Idle;
         Err("No active session".to_string())
     }
