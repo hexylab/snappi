@@ -158,3 +158,8 @@ pub fn save_settings(
 pub fn delete_recording(recording_id: String) -> Result<(), String> {
     crate::recording::session::delete_recording(&recording_id).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn get_recording_thumbnail(recording_id: String) -> Result<String, String> {
+    crate::export::encoder::generate_thumbnail(&recording_id).map_err(|e| e.to_string())
+}

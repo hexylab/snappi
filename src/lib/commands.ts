@@ -59,3 +59,9 @@ export async function saveSettings(newSettings: AppSettings): Promise<void> {
 export async function deleteRecording(recordingId: string): Promise<void> {
   return invoke("delete_recording", { recordingId });
 }
+
+export async function getRecordingThumbnail(
+  recordingId: string
+): Promise<string> {
+  return invoke("get_recording_thumbnail", { recordingId });
+}

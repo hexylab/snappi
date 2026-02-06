@@ -1,4 +1,5 @@
 use super::*;
+use crate::export::presets::EncodingParams;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -93,11 +94,35 @@ impl Default for OutputStyle {
             output_width: 1920,
             output_height: 1080,
             canvas_width: 2048,
-            canvas_height: 1152,
+            canvas_height: 1208,
             border_radius: 12,
             shadow_blur: 40.0,
             shadow_offset_y: 10.0,
             shadow_color: [0, 0, 0, 80],
+            cursor_size_multiplier: 1.2,
+            click_ring_max_radius: 30.0,
+            click_ring_duration_ms: 400,
+            click_ring_color: [59, 130, 246, 180],
+            click_ring_stroke_width: 2.5,
+            key_badge_duration_ms: 1500,
+            zoom_spring_tension: 170.0,
+            zoom_spring_friction: 26.0,
+        }
+    }
+}
+
+impl OutputStyle {
+    pub fn from_settings(params: &EncodingParams, settings: &AppSettings) -> Self {
+        let shadow_enabled = settings.style.shadow_enabled;
+        Self {
+            output_width: params.width.unwrap_or(1920),
+            output_height: params.height.unwrap_or(1080),
+            canvas_width: params.canvas_width,
+            canvas_height: params.canvas_height,
+            border_radius: settings.style.border_radius,
+            shadow_blur: if shadow_enabled { settings.style.shadow_blur } else { 0.0 },
+            shadow_offset_y: if shadow_enabled { settings.style.shadow_offset_y } else { 0.0 },
+            shadow_color: if shadow_enabled { [0, 0, 0, 80] } else { [0, 0, 0, 0] },
             cursor_size_multiplier: 1.2,
             click_ring_max_radius: 30.0,
             click_ring_duration_ms: 400,

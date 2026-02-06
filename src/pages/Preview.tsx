@@ -1,5 +1,6 @@
-import { createSignal, Show } from "solid-js";
-import { exportRecording } from "../lib/commands";
+import { createSignal, onMount, Show } from "solid-js";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { exportRecording, getRecordingThumbnail } from "../lib/commands";
 import type { ExportFormat, QualityPreset } from "../lib/types";
 import ExportButtons from "../components/ExportButtons";
 
@@ -14,6 +15,18 @@ export default function Preview(props: Props) {
   const [exportedPath, setExportedPath] = createSignal<string | null>(null);
   const [quality, setQuality] = createSignal<QualityPreset>("Social");
   const [error, setError] = createSignal<string | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = createSignal<string | null>(null);
+
+  onMount(async () => {
+    if (props.recordingId) {
+      try {
+        const thumbPath = await getRecordingThumbnail(props.recordingId);
+        setThumbnailUrl(convertFileSrc(thumbPath));
+      } catch (e) {
+        console.error("Failed to load thumbnail:", e);
+      }
+    }
+  });
 
   const handleExport = async (format: ExportFormat) => {
     if (!props.recordingId) return;
@@ -43,13 +56,20 @@ export default function Preview(props: Props) {
         <div class="w-full max-w-3xl">
           <div class="aspect-video bg-slate-800 rounded-2xl overflow-hidden border border-slate-700/50 flex items-center justify-center">
             <Show when={props.recordingId} fallback={<p class="text-slate-500">No recording selected</p>}>
-              <div class="text-center">
-                <svg class="w-16 h-16 mx-auto mb-3 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" />
-                </svg>
-                <p class="text-slate-400 text-sm">Recording ready for export</p>
-                <p class="text-slate-600 text-xs mt-1">ID: {props.recordingId}</p>
-              </div>
+              <Show when={thumbnailUrl()} fallback={
+                <div class="text-center">
+                  <svg class="w-16 h-16 mx-auto mb-3 text-slate-600 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" />
+                  </svg>
+                  <p class="text-slate-400 text-sm">Loading preview...</p>
+                </div>
+              }>
+                <img
+                  src={thumbnailUrl()!}
+                  alt="Recording preview"
+                  class="w-full h-full object-contain"
+                />
+              </Show>
             </Show>
           </div>
         </div>
