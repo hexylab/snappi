@@ -1,14 +1,14 @@
 use crate::config::{AppSettings, RecordingInfo, RecordingMeta};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct RecordingSession {
     id: String,
     recording_dir: std::path::PathBuf,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
-    start_time: Option<std::time::Instant>,
+    start_time: Arc<Mutex<Option<std::time::Instant>>>,
     fps: u32,
 }
 
@@ -27,7 +27,7 @@ impl RecordingSession {
             recording_dir: base_dir,
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
-            start_time: None,
+            start_time: Arc::new(Mutex::new(None)),
             fps: settings.recording.fps,
         })
     }
@@ -38,6 +38,7 @@ impl RecordingSession {
 
     pub fn start(&self) -> Result<()> {
         self.is_running.store(true, Ordering::SeqCst);
+        *self.start_time.lock().unwrap() = Some(std::time::Instant::now());
         log::info!("Recording started: {}", self.id);
 
         // Start capture thread
@@ -82,7 +83,7 @@ impl RecordingSession {
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         // Write metadata
-        let duration_ms = self.start_time
+        let duration_ms = self.start_time.lock().unwrap()
             .map(|t| t.elapsed().as_millis() as u64)
             .unwrap_or(0);
 

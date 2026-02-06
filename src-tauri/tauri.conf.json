@@ -44,8 +44,6 @@
     ]
   },
   "plugins": {
-    "global-shortcut": {
-      "shortcuts": ["CmdOrCtrl+Shift+R"]
-    }
+    "global-shortcut": null
   }
 }
