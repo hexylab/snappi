@@ -47,14 +47,16 @@ function App() {
         console.error("Failed to start recording:", e);
       }
     } else if (state === "Recording" || state === "Paused") {
+      if (timerRef) clearInterval(timerRef);
       try {
-        if (timerRef) clearInterval(timerRef);
         const id = await stopRecording();
         setRecordingState("Idle");
         setCurrentRecordingId(id);
         setPage("preview");
       } catch (e) {
         console.error("Failed to stop recording:", e);
+        // Reset state so UI doesn't get stuck in Recording mode
+        setRecordingState("Idle");
       }
     }
   };

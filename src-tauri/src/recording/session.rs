@@ -87,15 +87,23 @@ impl RecordingSession {
             .map(|t| t.elapsed().as_millis() as u64)
             .unwrap_or(0);
 
+        // Read actual screen dimensions from capture thread output
+        let (screen_width, screen_height) = self.read_dimensions();
+
+        // Check if audio was actually captured (file exists and has data beyond WAV header)
+        let audio_path = self.recording_dir.join("audio.wav");
+        let has_audio = audio_path.exists()
+            && std::fs::metadata(&audio_path).map(|m| m.len() > 44).unwrap_or(false);
+
         let meta = RecordingMeta {
             version: 1,
             id: self.id.clone(),
-            screen_width: 1920,
-            screen_height: 1080,
+            screen_width,
+            screen_height,
             fps: self.fps,
             start_time: chrono::Local::now().to_rfc3339(),
             duration_ms,
-            has_audio: true,
+            has_audio,
             monitor_scale: 1.0,
             recording_dir: self.recording_dir.to_string_lossy().to_string(),
         };
@@ -105,6 +113,20 @@ impl RecordingSession {
         std::fs::write(meta_path, meta_json)?;
 
         Ok(())
+    }
+
+    fn read_dimensions(&self) -> (u32, u32) {
+        let dims_path = self.recording_dir.join("dimensions.txt");
+        if let Ok(content) = std::fs::read_to_string(&dims_path) {
+            let parts: Vec<&str> = content.trim().split('x').collect();
+            if parts.len() == 2 {
+                if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                    return (w, h);
+                }
+            }
+        }
+        // Fallback to default
+        (1920, 1080)
     }
 
     pub fn pause(&self) -> Result<()> {
