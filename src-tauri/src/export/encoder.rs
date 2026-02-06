@@ -49,26 +49,80 @@ pub fn export(
 }
 
 fn find_ffmpeg() -> Result<String> {
-    // Try bundled ffmpeg first
+    // Try bundled ffmpeg first (next to exe)
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
-    if let Some(dir) = exe_dir {
+    if let Some(ref dir) = exe_dir {
         let bundled = dir.join("ffmpeg").join("ffmpeg.exe");
         if bundled.exists() {
             return Ok(bundled.to_string_lossy().to_string());
         }
+        // Also check next to the exe directly
+        let beside = dir.join("ffmpeg.exe");
+        if beside.exists() {
+            return Ok(beside.to_string_lossy().to_string());
+        }
     }
 
-    // Fall back to system ffmpeg
+    // Try system PATH
     if Command::new("ffmpeg").arg("-version").output().is_ok() {
         return Ok("ffmpeg".to_string());
+    }
+
+    // Try winget install location
+    if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
+        let winget_dir = std::path::PathBuf::from(local_app)
+            .join("Microsoft")
+            .join("WinGet")
+            .join("Packages");
+        if winget_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&winget_dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().contains("FFmpeg") {
+                        // Search for ffmpeg.exe inside this package
+                        if let Some(path) = find_ffmpeg_in_dir(&entry.path()) {
+                            return Ok(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Try common install locations
+    let common_paths = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\tools\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+    ];
+    for path in &common_paths {
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
+        }
     }
 
     Err(anyhow::anyhow!(
         "FFmpeg not found. Please install FFmpeg or place it in the ffmpeg/ directory."
     ))
+}
+
+fn find_ffmpeg_in_dir(dir: &std::path::Path) -> Option<String> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.file_name().map(|n| n == "ffmpeg.exe").unwrap_or(false) {
+                return Some(path.to_string_lossy().to_string());
+            }
+            if path.is_dir() {
+                if let Some(found) = find_ffmpeg_in_dir(&path) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn encode_mp4(
