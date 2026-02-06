@@ -1,0 +1,71 @@
+[package]
+name = "snappi"
+version = "0.1.0"
+description = "Screen Studio-level screen recorder for Windows"
+authors = ["hexylab"]
+edition = "2021"
+
+[lib]
+name = "snappi_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Input events
+rdev = "0.5"
+
+# Image processing
+image = "0.25"
+
+# Audio capture
+cpal = "0.15"
+
+# Windows APIs (Screen capture via Desktop Duplication, UI Automation, etc.)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_UI_Accessibility",
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Direct3D",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Security",
+] }
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+
+[dependencies.chrono]
+version = "0.4"
+features = ["serde"]
+
+[dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dependencies.anyhow]
+version = "1"
+
+[dependencies.log]
+version = "0.4"
+
+[dependencies.env_logger]
+version = "0.11"
+
+[dependencies.tempfile]
+version = "3"
+
+[dependencies.dirs]
+version = "6"
