@@ -103,6 +103,13 @@ pub enum RecordingEvent {
         x: f64,
         y: f64,
     },
+    #[serde(rename = "click_release")]
+    ClickRelease {
+        t: u64,
+        btn: String,
+        x: f64,
+        y: f64,
+    },
     #[serde(rename = "key")]
     Key {
         t: u64,

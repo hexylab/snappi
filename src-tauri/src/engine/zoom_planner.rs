@@ -1,4 +1,4 @@
-use super::analyzer::{Segment, SegmentType};
+use super::analyzer::{IdleLevel, Segment, SegmentType};
 use crate::config::RecordingMeta;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,6 @@ pub fn generate_zoom_plan(
     default_zoom: f64,
     text_input_zoom: f64,
     max_zoom: f64,
-    idle_timeout_ms: u64,
 ) -> Vec<ZoomKeyframe> {
     let mut plan = Vec::new();
     let screen_w = meta.screen_width as f64;
@@ -74,14 +73,32 @@ pub fn generate_zoom_plan(
                 });
             }
             SegmentType::Idle => {
-                if seg.end_ms - seg.start_ms >= idle_timeout_ms {
-                    plan.push(ZoomKeyframe {
-                        time_ms: seg.start_ms + 300,
-                        target_x: screen_w / 2.0,
-                        target_y: screen_h / 2.0,
-                        zoom_level: 1.0,
-                        transition: TransitionType::SpringOut,
-                    });
+                // Use staged idle levels for differentiated zoom-out:
+                //   Short: maintain current zoom (no keyframe)
+                //   Medium: slow zoom-out to 1.2x
+                //   Long: full zoom-out to 1.0x
+                match seg.idle_level {
+                    Some(IdleLevel::Medium) => {
+                        plan.push(ZoomKeyframe {
+                            time_ms: seg.start_ms + 300,
+                            target_x: screen_w / 2.0,
+                            target_y: screen_h / 2.0,
+                            zoom_level: 1.2,
+                            transition: TransitionType::SpringOut,
+                        });
+                    }
+                    Some(IdleLevel::Long) => {
+                        plan.push(ZoomKeyframe {
+                            time_ms: seg.start_ms + 300,
+                            target_x: screen_w / 2.0,
+                            target_y: screen_h / 2.0,
+                            zoom_level: 1.0,
+                            transition: TransitionType::SpringOut,
+                        });
+                    }
+                    _ => {
+                        // Short idle or no level: maintain current zoom
+                    }
                 }
             }
             SegmentType::RapidAction => {
@@ -164,5 +181,153 @@ fn detect_cuts(
         if distance > threshold {
             plan[i].transition = TransitionType::Cut;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::analyzer::{FocusPoint, IdleLevel, Segment, SegmentType};
+
+    fn test_meta() -> RecordingMeta {
+        RecordingMeta {
+            version: 1,
+            id: "test".to_string(),
+            screen_width: 1920,
+            screen_height: 1080,
+            fps: 30,
+            start_time: "2024-01-01T00:00:00Z".to_string(),
+            duration_ms: 10000,
+            has_audio: false,
+            monitor_scale: 1.0,
+            recording_dir: "/tmp".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_click_generates_zoom_in() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Click,
+            start_ms: 1000,
+            end_ms: 1100,
+            focus_point: Some(FocusPoint {
+                x: 500.0,
+                y: 300.0,
+                region: None,
+            }),
+            idle_level: None,
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].zoom_level, 2.0);
+        assert_eq!(plan[0].target_x, 500.0);
+    }
+
+    #[test]
+    fn test_short_idle_no_keyframe() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Idle,
+            start_ms: 0,
+            end_ms: 1000,
+            focus_point: None,
+            idle_level: Some(IdleLevel::Short),
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert!(plan.is_empty(), "Short idle should not generate a keyframe");
+    }
+
+    #[test]
+    fn test_medium_idle_zoom_out_partial() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Idle,
+            start_ms: 1000,
+            end_ms: 4000,
+            focus_point: None,
+            idle_level: Some(IdleLevel::Medium),
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].zoom_level, 1.2, "Medium idle should zoom to 1.2x");
+        assert_eq!(plan[0].time_ms, 1300); // start_ms + 300
+    }
+
+    #[test]
+    fn test_long_idle_zoom_out_full() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Idle,
+            start_ms: 1000,
+            end_ms: 7000,
+            focus_point: None,
+            idle_level: Some(IdleLevel::Long),
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].zoom_level, 1.0, "Long idle should zoom to 1.0x");
+    }
+
+    #[test]
+    fn test_text_input_zoom() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::TextInput,
+            start_ms: 0,
+            end_ms: 2000,
+            focus_point: Some(FocusPoint {
+                x: 800.0,
+                y: 400.0,
+                region: None,
+            }),
+            idle_level: None,
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].zoom_level, 2.5);
+    }
+
+    #[test]
+    fn test_deduplication_removes_close_keyframes() {
+        let segments = vec![
+            Segment {
+                segment_type: SegmentType::Click,
+                start_ms: 0,
+                end_ms: 100,
+                focus_point: Some(FocusPoint { x: 100.0, y: 100.0, region: None }),
+                idle_level: None,
+            },
+            Segment {
+                segment_type: SegmentType::Click,
+                start_ms: 100,
+                end_ms: 200,
+                focus_point: Some(FocusPoint { x: 110.0, y: 110.0, region: None }),
+                idle_level: None,
+            },
+        ];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        // Two clicks within 300ms → deduplicated
+        assert!(plan.len() <= 1, "Close keyframes should be deduplicated");
+    }
+
+    #[test]
+    fn test_cut_transition_for_distant_targets() {
+        // Use Click (2.0x) and TextInput (2.5x) to avoid same-zoom deduplication
+        let segments = vec![
+            Segment {
+                segment_type: SegmentType::Click,
+                start_ms: 0,
+                end_ms: 100,
+                focus_point: Some(FocusPoint { x: 100.0, y: 100.0, region: None }),
+                idle_level: None,
+            },
+            Segment {
+                segment_type: SegmentType::TextInput,
+                start_ms: 2000,
+                end_ms: 4000,
+                focus_point: Some(FocusPoint { x: 1800.0, y: 900.0, region: None }),
+                idle_level: None,
+            },
+        ];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 2);
+        assert!(matches!(plan[1].transition, TransitionType::Cut),
+            "Distant targets should use Cut transition");
     }
 }

@@ -12,15 +12,11 @@ impl ViewportManager {
     pub fn new(
         screen_width: f64,
         screen_height: f64,
-        spring_tension: f64,
-        spring_friction: f64,
     ) -> Self {
         Self {
             viewport: AnimatedViewport::new(
                 screen_width,
                 screen_height,
-                spring_tension,
-                spring_friction,
             ),
             screen_width,
             screen_height,

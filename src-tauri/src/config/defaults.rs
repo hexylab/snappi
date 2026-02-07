@@ -84,8 +84,6 @@ pub struct OutputStyle {
     pub click_ring_color: [u8; 4],
     pub click_ring_stroke_width: f64,
     pub key_badge_duration_ms: u64,
-    pub zoom_spring_tension: f64,
-    pub zoom_spring_friction: f64,
 }
 
 impl Default for OutputStyle {
@@ -105,8 +103,6 @@ impl Default for OutputStyle {
             click_ring_color: [59, 130, 246, 180],
             click_ring_stroke_width: 2.5,
             key_badge_duration_ms: 1500,
-            zoom_spring_tension: 170.0,
-            zoom_spring_friction: 26.0,
         }
     }
 }
@@ -129,8 +125,6 @@ impl OutputStyle {
             click_ring_color: [59, 130, 246, 180],
             click_ring_stroke_width: 2.5,
             key_badge_duration_ms: 1500,
-            zoom_spring_tension: 170.0,
-            zoom_spring_friction: 26.0,
         }
     }
 }
