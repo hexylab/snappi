@@ -72,6 +72,16 @@ impl RecordingSession {
             }
         });
 
+        // Start window focus tracking thread
+        let running = self.is_running.clone();
+        let paused = self.is_paused.clone();
+        let dir = self.recording_dir.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = super::focus::track_focus(running, paused, &dir) {
+                log::error!("Window focus tracking error: {}", e);
+            }
+        });
+
         Ok(())
     }
 

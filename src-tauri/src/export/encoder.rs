@@ -222,20 +222,38 @@ fn compose_frames(
 }
 
 fn load_events(recording_dir: &std::path::Path) -> Result<Vec<RecordingEvent>> {
-    let events_path = recording_dir.join("events.jsonl");
-    if !events_path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&events_path)?;
     let mut events = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if !line.is_empty() {
-            if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
-                events.push(event);
+
+    // Load main events
+    let events_path = recording_dir.join("events.jsonl");
+    if events_path.exists() {
+        let content = std::fs::read_to_string(&events_path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
+                    events.push(event);
+                }
             }
         }
     }
+
+    // Load window focus events (separate file to avoid recording race conditions)
+    let window_events_path = recording_dir.join("window_events.jsonl");
+    if window_events_path.exists() {
+        let content = std::fs::read_to_string(&window_events_path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
+                    events.push(event);
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp to interleave correctly
+    events.sort_by_key(|e| crate::engine::analyzer::event_timestamp(e));
     Ok(events)
 }
 

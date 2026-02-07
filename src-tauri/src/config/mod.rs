@@ -132,6 +132,12 @@ pub enum RecordingEvent {
         name: String,
         rect: [f64; 4],
     },
+    #[serde(rename = "window_focus")]
+    WindowFocus {
+        t: u64,
+        title: String,
+        rect: [f64; 4],
+    },
 }
 
 /// Recording info for the frontend list
