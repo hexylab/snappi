@@ -3,6 +3,7 @@ use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent, Re
 use crate::engine::analyzer::analyze_events;
 use crate::engine::compositor::{ClickEffect, Compositor, KeyOverlay};
 use crate::engine::cursor_smoother::CursorSmoother;
+use crate::engine::preprocessor::preprocess;
 use crate::engine::zoom_planner::generate_zoom_plan;
 use crate::export::presets::EncodingParams;
 use anyhow::Result;
@@ -38,21 +39,21 @@ pub fn export(
 
     // Compose frames with effects engine
     log::info!("Starting effects composition for recording {}", recording_id);
-    let temp_dir = compose_frames(&recording_dir, &meta, settings, style, params.fps)?;
+    let (temp_dir, actual_fps) = compose_frames(&recording_dir, &meta, settings, style)?;
     let composed_frames_dir = temp_dir.path().join("frames");
-    log::info!("Effects composition complete, encoding...");
+    log::info!("Effects composition complete (actual fps: {:.1}), encoding...", actual_fps);
 
     let ffmpeg = find_ffmpeg()?;
 
     match format {
         ExportFormat::Mp4 => {
-            encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir)?;
+            encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?;
         }
         ExportFormat::Gif => {
-            encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params)?;
+            encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params, actual_fps)?;
         }
         ExportFormat::WebM => {
-            encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir)?;
+            encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?;
         }
     }
     // temp_dir dropped here → composed frames cleaned up automatically
@@ -68,13 +69,43 @@ fn compose_frames(
     meta: &RecordingMeta,
     settings: &AppSettings,
     style: OutputStyle,
-    fps: u32,
-) -> Result<tempfile::TempDir> {
-    let events = load_events(recording_dir).unwrap_or_default();
-    let frame_time_step_ms = if fps > 0 { 1000 / fps as u64 } else { 33 };
-    let dt = 1.0 / fps.max(1) as f64;
+) -> Result<(tempfile::TempDir, f64)> {
+    let raw_events = load_events(recording_dir).unwrap_or_default();
 
-    // 1. Analyze events and generate zoom plan
+    // Preprocess: thin mouse moves and detect drags
+    let preprocessed = preprocess(&raw_events);
+    let events = preprocessed.events;
+    log::info!(
+        "Preprocessed {} raw events → {} thinned events, {} drags detected",
+        raw_events.len(),
+        events.len(),
+        preprocessed.drags.len(),
+    );
+
+    // Read frame count first (needed for timing calculation)
+    let frame_count = read_frame_count(recording_dir);
+    if frame_count == 0 {
+        return Err(anyhow::anyhow!("No frames found in recording"));
+    }
+
+    // Calculate actual recording framerate from real data
+    // Events use real-time timestamps (ms from recording start),
+    // so frame timing must match the actual recording duration
+    let actual_fps = if meta.duration_ms > 0 && frame_count > 1 {
+        (frame_count as f64 * 1000.0) / meta.duration_ms as f64
+    } else {
+        meta.fps as f64
+    };
+    let frame_time_step_ms = if frame_count > 1 && meta.duration_ms > 0 {
+        meta.duration_ms / frame_count
+    } else if meta.fps > 0 {
+        1000 / meta.fps as u64
+    } else {
+        33
+    };
+    let dt = 1.0 / actual_fps.max(1.0);
+
+    // 1. Analyze thinned events and generate zoom plan
     let segments = analyze_events(&events);
     let zoom_keyframes = if settings.effects.auto_zoom_enabled {
         generate_zoom_plan(
@@ -83,16 +114,17 @@ fn compose_frames(
             settings.effects.default_zoom_level,
             settings.effects.text_input_zoom_level,
             settings.effects.max_zoom,
-            settings.effects.idle_timeout_ms,
         )
     } else {
         Vec::new()
     };
     log::info!(
-        "Analyzed {} events → {} segments → {} zoom keyframes",
+        "Analyzed {} events → {} segments → {} zoom keyframes (actual_fps: {:.1}, frame_step: {}ms)",
         events.len(),
         segments.len(),
-        zoom_keyframes.len()
+        zoom_keyframes.len(),
+        actual_fps,
+        frame_time_step_ms,
     );
 
     // 2. Smooth cursor positions
@@ -123,16 +155,11 @@ fn compose_frames(
     let composed_frames_dir = temp_dir.path().join("frames");
     std::fs::create_dir_all(&composed_frames_dir)?;
 
-    // 6. Read frame count
-    let frame_count = read_frame_count(recording_dir);
-    if frame_count == 0 {
-        return Err(anyhow::anyhow!("No frames found in recording"));
-    }
-
     let frames_dir = recording_dir.join("frames");
     let mut kf_index = 0;
+    let mut output_frame_count: u64 = 0;
 
-    // 7. Process each frame
+    // 6. Process each frame
     for frame_idx in 0..frame_count {
         let frame_time_ms = frame_idx * frame_time_step_ms;
 
@@ -171,15 +198,27 @@ fn compose_frames(
         );
 
         // Save composed frame as BMP (faster than PNG for temp files)
-        let output_path = composed_frames_dir.join(format!("frame_{:08}.bmp", frame_idx));
-        composed.save_with_format(&output_path, image::ImageFormat::Bmp)?;
+        // Use sequential output counter to avoid gaps in FFmpeg sequence
+        // Convert RGBA→RGB to avoid alpha channel issues with FFmpeg
+        let rgb_frame = image::DynamicImage::ImageRgba8(composed).to_rgb8();
+        let output_path = composed_frames_dir.join(format!("frame_{:08}.bmp", output_frame_count));
+        rgb_frame.save_with_format(&output_path, image::ImageFormat::Bmp)?;
+        output_frame_count += 1;
 
         if frame_idx % 30 == 0 {
             log::info!("Composing frame {}/{}", frame_idx, frame_count);
         }
     }
 
-    Ok(temp_dir)
+    // Recalculate fps based on actual output frame count (in case some frames were skipped)
+    let final_fps = if output_frame_count > 0 && meta.duration_ms > 0 {
+        (output_frame_count as f64 * 1000.0) / meta.duration_ms as f64
+    } else {
+        actual_fps
+    };
+    log::info!("Composed {} frames (final fps: {:.1})", output_frame_count, final_fps);
+
+    Ok((temp_dir, final_fps))
 }
 
 fn load_events(recording_dir: &std::path::Path) -> Result<Vec<RecordingEvent>> {
@@ -398,12 +437,13 @@ fn encode_mp4(
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
+    input_fps: f64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
-    // Input: composed BMP frames
+    // Input: composed BMP frames at actual recording framerate
     cmd.args(["-y", "-framerate"])
-        .arg(params.fps.to_string())
+        .arg(format!("{:.2}", input_fps))
         .args(["-i"])
         .arg(
             frames_dir
@@ -429,14 +469,17 @@ fn encode_mp4(
         .arg(params.crf.to_string())
         .args(["-preset", "medium"])
         .args(["-pix_fmt", "yuv420p"])
-        .args(["-movflags", "+faststart"]);
+        .args(["-movflags", "+faststart"])
+        .args(["-r"])
+        .arg(params.fps.to_string());
 
     if has_audio {
-        cmd.args(["-c:a", "aac", "-b:a", "128k"]);
+        cmd.args(["-c:a", "aac", "-b:a", "128k", "-shortest"]);
     }
 
     cmd.arg(output.to_string_lossy().to_string());
 
+    log::info!("FFmpeg MP4 command: {:?}", cmd);
     let result = cmd.output()?;
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
@@ -451,15 +494,15 @@ fn encode_gif(
     frames_dir: &std::path::Path,
     output: &std::path::Path,
     params: &EncodingParams,
+    input_fps: f64,
 ) -> Result<()> {
     let palette_path = output.with_extension("palette.png");
-    let fps = params.fps.min(15);
     let width = params.canvas_width.min(640);
 
     // Pass 1: Generate palette
     Command::new(ffmpeg)
         .args(["-y", "-framerate"])
-        .arg(fps.to_string())
+        .arg(format!("{:.2}", input_fps))
         .args(["-i"])
         .arg(
             frames_dir
@@ -468,14 +511,14 @@ fn encode_gif(
                 .to_string(),
         )
         .args(["-vf"])
-        .arg(format!("scale={}:-1:flags=lanczos,palettegen", width))
+        .arg(format!("fps=15,scale={}:-1:flags=lanczos,palettegen", width))
         .arg(palette_path.to_string_lossy().to_string())
         .output()?;
 
     // Pass 2: Generate GIF with palette
     Command::new(ffmpeg)
         .args(["-y", "-framerate"])
-        .arg(fps.to_string())
+        .arg(format!("{:.2}", input_fps))
         .args(["-i"])
         .arg(
             frames_dir
@@ -487,7 +530,7 @@ fn encode_gif(
         .arg(palette_path.to_string_lossy().to_string())
         .args(["-lavfi"])
         .arg(format!(
-            "scale={}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+            "fps=15,scale={}:-1:flags=lanczos[x];[x][1:v]paletteuse",
             width
         ))
         .arg(output.to_string_lossy().to_string())
@@ -504,12 +547,13 @@ fn encode_webm(
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
+    input_fps: f64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
-    // Input: composed BMP frames
+    // Input: composed BMP frames at actual recording framerate
     cmd.args(["-y", "-framerate"])
-        .arg(params.fps.to_string())
+        .arg(format!("{:.2}", input_fps))
         .args(["-i"])
         .arg(
             frames_dir
@@ -533,14 +577,17 @@ fn encode_webm(
     cmd.args(["-c:v", "libvpx-vp9"])
         .args(["-crf"])
         .arg(params.crf.to_string())
-        .args(["-b:v", "0"]);
+        .args(["-b:v", "0"])
+        .args(["-r"])
+        .arg(params.fps.to_string());
 
     if has_audio {
-        cmd.args(["-c:a", "libopus"]);
+        cmd.args(["-c:a", "libopus", "-shortest"]);
     }
 
     cmd.arg(output.to_string_lossy().to_string());
 
+    log::info!("FFmpeg WebM command: {:?}", cmd);
     let result = cmd.output()?;
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
