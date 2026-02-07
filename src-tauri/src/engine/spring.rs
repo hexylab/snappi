@@ -61,8 +61,17 @@ pub struct SpringHalfLife;
 
 impl SpringHalfLife {
     pub const VIEWPORT_PAN: f64 = 0.15;
+    pub const WINDOW_PAN: f64 = 0.20;
+
+    pub const ZOOM_IN_FAST: f64 = 0.12;
     pub const ZOOM_IN: f64 = 0.20;
-    pub const ZOOM_OUT: f64 = 0.35;
+    pub const ZOOM_IN_SLOW: f64 = 0.28;
+
+    pub const ZOOM_OUT: f64 = 0.25;
+    pub const ZOOM_OUT_SLOW: f64 = 0.35;
+
+    pub const WINDOW_ZOOM: f64 = 0.25;
+
     pub const CURSOR_SMOOTHING: f64 = 0.05;
 }
 
@@ -117,7 +126,23 @@ impl AnimatedViewport {
         } else if zoom < self.zoom.target {
             self.zoom_half_life = SpringHalfLife::ZOOM_OUT;
         }
+        self.pan_half_life = SpringHalfLife::VIEWPORT_PAN;
         self.zoom.set_target(zoom);
+    }
+
+    pub fn set_target_with_half_life(
+        &mut self,
+        x: f64,
+        y: f64,
+        zoom: f64,
+        zoom_half_life: f64,
+        pan_half_life: f64,
+    ) {
+        self.center_x.set_target(x);
+        self.center_y.set_target(y);
+        self.zoom.set_target(zoom);
+        self.zoom_half_life = zoom_half_life;
+        self.pan_half_life = pan_half_life;
     }
 
     pub fn snap_to(&mut self, x: f64, y: f64, zoom: f64) {

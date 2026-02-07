@@ -49,6 +49,8 @@ pub struct Segment {
     pub end_ms: u64,
     pub focus_point: Option<FocusPoint>,
     pub idle_level: Option<IdleLevel>,
+    pub window_rect: Option<Rect>,
+    pub window_changed: bool,
 }
 
 // Idle detection thresholds (using significant events only)
@@ -62,6 +64,10 @@ const RAPID_ACTION_MIN_CLICKS: usize = 3;
 // Click→Key text input detection window
 const TEXT_INPUT_CLICK_KEY_GAP_MS: u64 = 500;
 const TEXT_INPUT_KEY_CONTINUATION_MS: u64 = 300;
+
+/// Window change threshold: if action occurs within this time after a window
+/// change, the segment is marked as `window_changed = true`.
+const WINDOW_CHANGE_THRESHOLD_MS: u64 = 500;
 
 /// Analyze recorded events and split into semantic segments.
 /// Only considers significant events (Click, Key, Scroll, ClickRelease) for
@@ -82,7 +88,8 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
                 RecordingEvent::Click { t, .. }
                 | RecordingEvent::ClickRelease { t, .. }
                 | RecordingEvent::Key { t, .. }
-                | RecordingEvent::Scroll { t, .. } => *t,
+                | RecordingEvent::Scroll { t, .. }
+                | RecordingEvent::WindowFocus { t, .. } => *t,
                 _ => return None,
             };
             Some((i, t))
@@ -110,17 +117,33 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
                 end_ms: t2,
                 focus_point: None,
                 idle_level: Some(idle_level),
+                window_rect: None,
+                window_changed: false,
             });
         }
     }
 
-    // Phase 3: Process non-idle segments
+    // Phase 3: Process non-idle segments with window context tracking
+    let mut current_window: Option<Rect> = None;
+    let mut last_window_change_ms: u64 = 0;
     let mut i = 0;
     while i < events.len() {
         let event = &events[i];
 
         match event {
+            RecordingEvent::WindowFocus { t, rect, .. } => {
+                current_window = Some(Rect {
+                    x: rect[0],
+                    y: rect[1],
+                    width: rect[2] - rect[0],
+                    height: rect[3] - rect[1],
+                });
+                last_window_change_ms = *t;
+            }
             RecordingEvent::Click { t, x, y, .. } => {
+                let win_changed = current_window.is_some()
+                    && t.saturating_sub(last_window_change_ms) < WINDOW_CHANGE_THRESHOLD_MS;
+
                 // Check for rapid clicks first
                 let mut click_count = 1;
                 let mut end_idx = i;
@@ -151,6 +174,8 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
                             region: None,
                         }),
                         idle_level: None,
+                        window_rect: current_window.clone(),
+                        window_changed: win_changed,
                     });
                     i = end_idx + 1;
                     continue;
@@ -158,7 +183,9 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
 
                 // Check for Click→Key text input pattern
                 let text_input = detect_text_input_after_click(events, i, *t, *x, *y);
-                if let Some(seg) = text_input {
+                if let Some(mut seg) = text_input {
+                    seg.window_rect = current_window.clone();
+                    seg.window_changed = win_changed;
                     segments.push(seg);
                     i += 1;
                     continue;
@@ -175,17 +202,24 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
                         region: None,
                     }),
                     idle_level: None,
+                    window_rect: current_window.clone(),
+                    window_changed: win_changed,
                 });
             }
             RecordingEvent::Focus { t, rect, .. } => {
-                // Focus-based text input detection (when focus events are available)
                 let text_input = detect_text_input_after_focus(events, i, *t, rect);
-                if let Some(seg) = text_input {
+                if let Some(mut seg) = text_input {
+                    let win_changed = current_window.is_some()
+                        && t.saturating_sub(last_window_change_ms) < WINDOW_CHANGE_THRESHOLD_MS;
+                    seg.window_rect = current_window.clone();
+                    seg.window_changed = win_changed;
                     segments.push(seg);
                 }
             }
             RecordingEvent::Scroll { t, x, y, .. } => {
-                // Group consecutive scrolls
+                let win_changed = current_window.is_some()
+                    && t.saturating_sub(last_window_change_ms) < WINDOW_CHANGE_THRESHOLD_MS;
+
                 let mut end_time = *t;
                 let mut j = i + 1;
                 while j < events.len() {
@@ -209,6 +243,8 @@ pub fn analyze_events(events: &[RecordingEvent]) -> Vec<Segment> {
                         region: None,
                     }),
                     idle_level: None,
+                    window_rect: current_window.clone(),
+                    window_changed: win_changed,
                 });
                 i = j;
                 continue;
@@ -270,6 +306,8 @@ fn detect_text_input_after_click(
                 region: None,
             }),
             idle_level: None,
+            window_rect: None,
+            window_changed: false,
         })
     } else {
         None
@@ -317,6 +355,8 @@ fn detect_text_input_after_focus(
                 }),
             }),
             idle_level: None,
+            window_rect: None,
+            window_changed: false,
         })
     } else {
         None
@@ -331,6 +371,7 @@ pub fn event_timestamp(event: &RecordingEvent) -> u64 {
         RecordingEvent::Key { t, .. } => *t,
         RecordingEvent::Scroll { t, .. } => *t,
         RecordingEvent::Focus { t, .. } => *t,
+        RecordingEvent::WindowFocus { t, .. } => *t,
     }
 }
 
@@ -467,5 +508,37 @@ mod tests {
         let events = vec![click(0, 100.0, 100.0), click(500, 200.0, 200.0)];
         let segs = analyze_events(&events);
         assert!(!segs.iter().any(|s| s.segment_type == SegmentType::Idle));
+    }
+
+    #[test]
+    fn test_window_focus_attaches_to_click() {
+        let events = vec![
+            RecordingEvent::WindowFocus {
+                t: 0,
+                title: "Notepad".to_string(),
+                rect: [100.0, 100.0, 600.0, 500.0],
+            },
+            click(200, 300.0, 300.0),
+        ];
+        let segs = analyze_events(&events);
+        let click_seg = segs.iter().find(|s| s.segment_type == SegmentType::Click).unwrap();
+        assert!(click_seg.window_rect.is_some(), "Click after WindowFocus should have window_rect");
+        assert!(click_seg.window_changed, "Click within 500ms of WindowFocus should be window_changed");
+    }
+
+    #[test]
+    fn test_window_focus_not_changed_after_threshold() {
+        let events = vec![
+            RecordingEvent::WindowFocus {
+                t: 0,
+                title: "Notepad".to_string(),
+                rect: [100.0, 100.0, 600.0, 500.0],
+            },
+            click(1000, 300.0, 300.0),
+        ];
+        let segs = analyze_events(&events);
+        let click_seg = segs.iter().find(|s| s.segment_type == SegmentType::Click).unwrap();
+        assert!(click_seg.window_rect.is_some(), "Should still have window_rect");
+        assert!(!click_seg.window_changed, "Click after 500ms should not be window_changed");
     }
 }

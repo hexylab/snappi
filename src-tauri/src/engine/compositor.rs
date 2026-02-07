@@ -20,6 +20,8 @@ pub struct Compositor {
     cached_background: Option<RgbaImage>,
     /// Pre-rendered cursor sprite at base size
     cursor_sprite: RgbaImage,
+    /// Cursor hotspot offset within sprite (tip position)
+    cursor_hotspot: (u32, u32),
 }
 
 impl Compositor {
@@ -29,7 +31,14 @@ impl Compositor {
             screen_height as f64,
         );
 
-        let cursor_sprite = create_cursor_sprite(CURSOR_BASE_SIZE);
+        let (cursor_sprite, cursor_hotspot) =
+            match capture_system_cursor_sprite() {
+                Some((img, hx, hy)) => (img, (hx, hy)),
+                None => {
+                    let sprite = create_cursor_sprite(CURSOR_BASE_SIZE);
+                    (sprite, (6, 6))
+                }
+            };
 
         Self {
             style,
@@ -38,6 +47,7 @@ impl Compositor {
             screen_height: screen_height as f64,
             cached_background: None,
             cursor_sprite,
+            cursor_hotspot,
         }
     }
 
@@ -47,7 +57,17 @@ impl Compositor {
                 self.viewport.snap_to(kf.target_x, kf.target_y, kf.zoom_level);
             }
             _ => {
-                self.viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level);
+                if let Some(ref hint) = kf.spring_hint {
+                    self.viewport.set_target_with_half_life(
+                        kf.target_x,
+                        kf.target_y,
+                        kf.zoom_level,
+                        hint.zoom_half_life,
+                        hint.pan_half_life,
+                    );
+                } else {
+                    self.viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level);
+                }
             }
         }
     }
@@ -100,6 +120,7 @@ impl Compositor {
                 out_x,
                 out_y,
                 cursor_scale,
+                self.cursor_hotspot,
             );
         }
 
@@ -447,27 +468,26 @@ fn draw_cursor_sprite(
     x: f64,
     y: f64,
     size_mult: f64,
+    hotspot: (u32, u32),
 ) {
-    let target_size = (CURSOR_BASE_SIZE as f64 * size_mult) as u32;
-    if target_size == 0 {
+    let scale = size_mult * (CURSOR_BASE_SIZE as f64) / (sprite.width().max(1) as f64);
+    let target_w = ((sprite.width() as f64) * scale) as u32;
+    let target_h = ((sprite.height() as f64) * scale) as u32;
+    if target_w == 0 || target_h == 0 {
         return;
     }
 
-    // Scale sprite to target size (with padding)
-    let pad_ratio = sprite.width() as f64 / CURSOR_BASE_SIZE as f64;
-    let total_size = (target_size as f64 * pad_ratio) as u32;
-
     let scaled = image::imageops::resize(
         sprite,
-        total_size.max(1),
-        total_size.max(1),
+        target_w.max(1),
+        target_h.max(1),
         image::imageops::FilterType::Triangle,
     );
 
-    // Position: cursor tip is at (x, y), offset by scaled padding
-    let pad_px = (6.0 * size_mult) as i32;
-    let start_x = x as i32 - pad_px;
-    let start_y = y as i32 - pad_px;
+    let hotspot_x = (hotspot.0 as f64 * scale) as i32;
+    let hotspot_y = (hotspot.1 as f64 * scale) as i32;
+    let start_x = x as i32 - hotspot_x;
+    let start_y = y as i32 - hotspot_y;
 
     for sy in 0..scaled.height() {
         for sx in 0..scaled.width() {
@@ -770,6 +790,109 @@ fn blend_pixel(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
     let b = (src[2] as f64 * sa + dst[2] as f64 * da * (1.0 - sa)) / out_a;
 
     Rgba([r as u8, g as u8, b as u8, (out_a * 255.0) as u8])
+}
+
+/// Capture the system cursor bitmap via Windows API.
+/// Returns (cursor_image, hotspot_x, hotspot_y) or None on failure.
+#[cfg(windows)]
+fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CopyIcon, GetIconInfo, LoadCursorW, IDC_ARROW, ICONINFO,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
+        BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+    };
+
+    unsafe {
+        let cursor = LoadCursorW(None, IDC_ARROW).ok()?;
+        let icon = CopyIcon(cursor).ok()?;
+
+        let mut icon_info = ICONINFO::default();
+        GetIconInfo(icon, &mut icon_info).ok()?;
+
+        let hbm_color = icon_info.hbmColor;
+        let hbm_mask = icon_info.hbmMask;
+        let hotspot_x = icon_info.xHotspot;
+        let hotspot_y = icon_info.yHotspot;
+
+        if hbm_color.is_invalid() {
+            if !hbm_mask.is_invalid() {
+                let _ = DeleteObject(hbm_mask);
+            }
+            return None;
+        }
+
+        let hdc = CreateCompatibleDC(None);
+
+        // Query dimensions
+        let mut bmp_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biPlanes: 1,
+                biBitCount: 32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(hdc, hbm_color, 0, 0, None, &mut bmp_info, DIB_RGB_COLORS);
+
+        let width = bmp_info.bmiHeader.biWidth as u32;
+        let height = bmp_info.bmiHeader.biHeight.unsigned_abs();
+
+        if width == 0 || height == 0 {
+            let _ = DeleteDC(hdc);
+            let _ = DeleteObject(hbm_color);
+            if !hbm_mask.is_invalid() {
+                let _ = DeleteObject(hbm_mask);
+            }
+            return None;
+        }
+
+        // Read pixel data top-down
+        bmp_info.bmiHeader.biHeight = -(height as i32);
+        bmp_info.bmiHeader.biWidth = width as i32;
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        GetDIBits(
+            hdc,
+            hbm_color,
+            0,
+            height,
+            Some(pixels.as_mut_ptr() as *mut _),
+            &mut bmp_info,
+            DIB_RGB_COLORS,
+        );
+
+        // BGRA → RGBA
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+
+        // If all alpha values are 0, set alpha based on pixel brightness
+        let all_alpha_zero = pixels.chunks_exact(4).all(|c| c[3] == 0);
+        if all_alpha_zero {
+            for chunk in pixels.chunks_exact_mut(4) {
+                if chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0 {
+                    chunk[3] = 255;
+                }
+            }
+        }
+
+        // Cleanup
+        let _ = DeleteDC(hdc);
+        let _ = DeleteObject(hbm_color);
+        if !hbm_mask.is_invalid() {
+            let _ = DeleteObject(hbm_mask);
+        }
+
+        let img = RgbaImage::from_raw(width, height, pixels)?;
+        Some((img, hotspot_x, hotspot_y))
+    }
+}
+
+#[cfg(not(windows))]
+fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
+    None
 }
 
 #[cfg(test)]

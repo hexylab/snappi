@@ -1,4 +1,5 @@
 use super::analyzer::{IdleLevel, Segment, SegmentType};
+use super::spring::SpringHalfLife;
 use crate::config::RecordingMeta;
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,13 @@ pub enum TransitionType {
     SpringOut,
     Smooth,
     Cut,
+    WindowZoom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpringHint {
+    pub zoom_half_life: f64,
+    pub pan_half_life: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +25,8 @@ pub struct ZoomKeyframe {
     pub target_y: f64,
     pub zoom_level: f64,
     pub transition: TransitionType,
+    #[serde(default)]
+    pub spring_hint: Option<SpringHint>,
 }
 
 const MIN_ZOOM_INTERVAL_MS: u64 = 300;
@@ -34,6 +44,29 @@ pub fn generate_zoom_plan(
     let screen_h = meta.screen_height as f64;
 
     for seg in segments {
+        // Two-stage zoom: if window changed, first zoom to window, then to action point
+        if seg.window_changed {
+            if let Some(ref win_rect) = seg.window_rect {
+                let win_cx = win_rect.center_x();
+                let win_cy = win_rect.center_y();
+                let win_zoom = calc_zoom_to_fit(win_rect, screen_w, screen_h, 0.1)
+                    .min(max_zoom)
+                    .max(1.2);
+
+                plan.push(ZoomKeyframe {
+                    time_ms: seg.start_ms.saturating_sub(400),
+                    target_x: win_cx,
+                    target_y: win_cy,
+                    zoom_level: win_zoom,
+                    transition: TransitionType::WindowZoom,
+                    spring_hint: Some(SpringHint {
+                        zoom_half_life: SpringHalfLife::WINDOW_ZOOM,
+                        pan_half_life: SpringHalfLife::WINDOW_PAN,
+                    }),
+                });
+            }
+        }
+
         match seg.segment_type {
             SegmentType::Click => {
                 if let Some(ref fp) = seg.focus_point {
@@ -43,6 +76,10 @@ pub fn generate_zoom_plan(
                         target_y: fp.y,
                         zoom_level: default_zoom,
                         transition: TransitionType::SpringIn,
+                        spring_hint: Some(SpringHint {
+                            zoom_half_life: SpringHalfLife::ZOOM_IN_FAST,
+                            pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                        }),
                     });
                 }
             }
@@ -60,6 +97,10 @@ pub fn generate_zoom_plan(
                         target_y: fp.y,
                         zoom_level: zoom,
                         transition: TransitionType::SpringIn,
+                        spring_hint: Some(SpringHint {
+                            zoom_half_life: SpringHalfLife::ZOOM_IN,
+                            pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                        }),
                     });
                 }
             }
@@ -70,13 +111,13 @@ pub fn generate_zoom_plan(
                     target_y: screen_h / 2.0,
                     zoom_level: 1.2,
                     transition: TransitionType::Smooth,
+                    spring_hint: Some(SpringHint {
+                        zoom_half_life: SpringHalfLife::ZOOM_IN_SLOW,
+                        pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                    }),
                 });
             }
             SegmentType::Idle => {
-                // Use staged idle levels for differentiated zoom-out:
-                //   Short: maintain current zoom (no keyframe)
-                //   Medium: slow zoom-out to 1.2x
-                //   Long: full zoom-out to 1.0x
                 match seg.idle_level {
                     Some(IdleLevel::Medium) => {
                         plan.push(ZoomKeyframe {
@@ -85,6 +126,10 @@ pub fn generate_zoom_plan(
                             target_y: screen_h / 2.0,
                             zoom_level: 1.2,
                             transition: TransitionType::SpringOut,
+                            spring_hint: Some(SpringHint {
+                                zoom_half_life: SpringHalfLife::ZOOM_OUT,
+                                pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                            }),
                         });
                     }
                     Some(IdleLevel::Long) => {
@@ -94,11 +139,13 @@ pub fn generate_zoom_plan(
                             target_y: screen_h / 2.0,
                             zoom_level: 1.0,
                             transition: TransitionType::SpringOut,
+                            spring_hint: Some(SpringHint {
+                                zoom_half_life: SpringHalfLife::ZOOM_OUT_SLOW,
+                                pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                            }),
                         });
                     }
-                    _ => {
-                        // Short idle or no level: maintain current zoom
-                    }
+                    _ => {}
                 }
             }
             SegmentType::RapidAction => {
@@ -109,6 +156,10 @@ pub fn generate_zoom_plan(
                         target_y: fp.y,
                         zoom_level: 1.8,
                         transition: TransitionType::SpringIn,
+                        spring_hint: Some(SpringHint {
+                            zoom_half_life: SpringHalfLife::ZOOM_IN_FAST,
+                            pan_half_life: SpringHalfLife::VIEWPORT_PAN,
+                        }),
                     });
                 }
             }
@@ -216,6 +267,8 @@ mod tests {
                 region: None,
             }),
             idle_level: None,
+            window_rect: None,
+            window_changed: false,
         }];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert_eq!(plan.len(), 1);
@@ -231,6 +284,8 @@ mod tests {
             end_ms: 1000,
             focus_point: None,
             idle_level: Some(IdleLevel::Short),
+            window_rect: None,
+            window_changed: false,
         }];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert!(plan.is_empty(), "Short idle should not generate a keyframe");
@@ -244,6 +299,8 @@ mod tests {
             end_ms: 4000,
             focus_point: None,
             idle_level: Some(IdleLevel::Medium),
+            window_rect: None,
+            window_changed: false,
         }];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert_eq!(plan.len(), 1);
@@ -259,6 +316,8 @@ mod tests {
             end_ms: 7000,
             focus_point: None,
             idle_level: Some(IdleLevel::Long),
+            window_rect: None,
+            window_changed: false,
         }];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert_eq!(plan.len(), 1);
@@ -277,6 +336,8 @@ mod tests {
                 region: None,
             }),
             idle_level: None,
+            window_rect: None,
+            window_changed: false,
         }];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert_eq!(plan.len(), 1);
@@ -292,6 +353,8 @@ mod tests {
                 end_ms: 100,
                 focus_point: Some(FocusPoint { x: 100.0, y: 100.0, region: None }),
                 idle_level: None,
+                window_rect: None,
+                window_changed: false,
             },
             Segment {
                 segment_type: SegmentType::Click,
@@ -299,6 +362,8 @@ mod tests {
                 end_ms: 200,
                 focus_point: Some(FocusPoint { x: 110.0, y: 110.0, region: None }),
                 idle_level: None,
+                window_rect: None,
+                window_changed: false,
             },
         ];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
@@ -316,6 +381,8 @@ mod tests {
                 end_ms: 100,
                 focus_point: Some(FocusPoint { x: 100.0, y: 100.0, region: None }),
                 idle_level: None,
+                window_rect: None,
+                window_changed: false,
             },
             Segment {
                 segment_type: SegmentType::TextInput,
@@ -323,11 +390,64 @@ mod tests {
                 end_ms: 4000,
                 focus_point: Some(FocusPoint { x: 1800.0, y: 900.0, region: None }),
                 idle_level: None,
+                window_rect: None,
+                window_changed: false,
             },
         ];
         let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
         assert_eq!(plan.len(), 2);
         assert!(matches!(plan[1].transition, TransitionType::Cut),
             "Distant targets should use Cut transition");
+    }
+
+    #[test]
+    fn test_window_change_produces_two_stage_zoom() {
+        use super::super::analyzer::Rect;
+        let segments = vec![Segment {
+            segment_type: SegmentType::Click,
+            start_ms: 1000,
+            end_ms: 1100,
+            focus_point: Some(FocusPoint { x: 300.0, y: 300.0, region: None }),
+            idle_level: None,
+            window_rect: Some(Rect { x: 100.0, y: 100.0, width: 800.0, height: 600.0 }),
+            window_changed: true,
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert!(plan.len() >= 2, "Window change should produce at least 2 keyframes, got {}", plan.len());
+        assert!(matches!(plan[0].transition, TransitionType::WindowZoom));
+        assert!(plan[0].time_ms < plan[1].time_ms);
+    }
+
+    #[test]
+    fn test_no_window_events_backward_compatible() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Click,
+            start_ms: 1000,
+            end_ms: 1100,
+            focus_point: Some(FocusPoint { x: 500.0, y: 300.0, region: None }),
+            idle_level: None,
+            window_rect: None,
+            window_changed: false,
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(plan[0].transition, TransitionType::SpringIn));
+    }
+
+    #[test]
+    fn test_spring_hint_on_click() {
+        let segments = vec![Segment {
+            segment_type: SegmentType::Click,
+            start_ms: 1000,
+            end_ms: 1100,
+            focus_point: Some(FocusPoint { x: 500.0, y: 300.0, region: None }),
+            idle_level: None,
+            window_rect: None,
+            window_changed: false,
+        }];
+        let plan = generate_zoom_plan(&segments, &test_meta(), 2.0, 2.5, 3.0);
+        assert_eq!(plan.len(), 1);
+        let hint = plan[0].spring_hint.as_ref().expect("Click should have spring hint");
+        assert_eq!(hint.zoom_half_life, SpringHalfLife::ZOOM_IN_FAST);
     }
 }
