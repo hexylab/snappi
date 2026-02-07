@@ -1,3 +1,4 @@
+use super::effects::background::create_background_image;
 use super::spring::AnimatedViewport;
 use super::zoom_planner::{TransitionType, ZoomKeyframe};
 use crate::config::defaults::OutputStyle;
@@ -7,6 +8,9 @@ use image::{Rgba, RgbaImage};
 const DEAD_ZONE_RADIUS: f64 = 0.3;
 const SOFT_ZONE_RADIUS: f64 = 0.7;
 
+/// Cursor sprite base size in pixels (before zoom scaling)
+const CURSOR_BASE_SIZE: u32 = 32;
+
 pub struct Compositor {
     style: OutputStyle,
     viewport: AnimatedViewport,
@@ -14,6 +18,8 @@ pub struct Compositor {
     screen_height: f64,
     /// Cached background image (same every frame)
     cached_background: Option<RgbaImage>,
+    /// Pre-rendered cursor sprite at base size
+    cursor_sprite: RgbaImage,
 }
 
 impl Compositor {
@@ -23,12 +29,15 @@ impl Compositor {
             screen_height as f64,
         );
 
+        let cursor_sprite = create_cursor_sprite(CURSOR_BASE_SIZE);
+
         Self {
             style,
             viewport,
             screen_width: screen_width as f64,
             screen_height: screen_height as f64,
             cached_background: None,
+            cursor_sprite,
         }
     }
 
@@ -61,6 +70,7 @@ impl Compositor {
         self.viewport.update(dt);
 
         let vp = self.viewport.current_viewport(self.screen_width, self.screen_height);
+        let zoom = vp.zoom;
 
         // (2) Crop and scale to output size (using Triangle filter for speed)
         let mut output = crop_and_scale(
@@ -73,7 +83,7 @@ impl Compositor {
             self.style.output_height,
         );
 
-        // (3) Draw cursor
+        // (3) Draw cursor — scale with zoom to maintain consistent visual size
         if let Some((cx, cy)) = cursor_pos {
             let (out_x, out_y) = self.viewport.to_output_coords(
                 cx,
@@ -83,10 +93,17 @@ impl Compositor {
                 self.screen_width,
                 self.screen_height,
             );
-            draw_cursor(&mut output, out_x, out_y, self.style.cursor_size_multiplier);
+            let cursor_scale = self.style.cursor_size_multiplier * zoom;
+            draw_cursor_sprite(
+                &mut output,
+                &self.cursor_sprite,
+                out_x,
+                out_y,
+                cursor_scale,
+            );
         }
 
-        // (4) Click ring effects with easing
+        // (4) Click ring effects — scale with zoom
         for effect in click_effects {
             if effect.is_active(frame_time_ms) {
                 let (out_x, out_y) = self.viewport.to_output_coords(
@@ -103,9 +120,9 @@ impl Compositor {
                     out_x,
                     out_y,
                     progress,
-                    self.style.click_ring_max_radius,
+                    self.style.click_ring_max_radius * zoom,
                     &self.style.click_ring_color,
-                    self.style.click_ring_stroke_width,
+                    self.style.click_ring_stroke_width * zoom,
                 );
             }
         }
@@ -134,7 +151,7 @@ impl Compositor {
         let offset_x = (self.style.canvas_width - self.style.output_width) / 2;
         let offset_y = (self.style.canvas_height - self.style.output_height) / 2;
 
-        // Draw shadow
+        // Draw rounded-rectangle shadow (matches border_radius)
         draw_drop_shadow(
             &mut canvas,
             offset_x,
@@ -144,6 +161,7 @@ impl Compositor {
             self.style.shadow_blur,
             self.style.shadow_offset_y,
             &self.style.shadow_color,
+            self.style.border_radius,
         );
 
         // Composite the output frame onto the canvas
@@ -193,10 +211,10 @@ impl Compositor {
 
     fn get_or_create_background(&mut self) -> &RgbaImage {
         if self.cached_background.is_none() {
-            self.cached_background = Some(create_background(
+            self.cached_background = Some(create_background_image(
                 self.style.canvas_width,
                 self.style.canvas_height,
-                &self.style,
+                &self.style.background,
             ));
         }
         self.cached_background.as_ref().unwrap()
@@ -280,27 +298,194 @@ fn crop_and_scale(
     image::imageops::resize(&cropped, out_w, out_h, image::imageops::FilterType::Triangle)
 }
 
-fn draw_cursor(img: &mut RgbaImage, x: f64, y: f64, size_mult: f64) {
-    let size = (12.0 * size_mult) as i32;
-    let cx = x as i32;
-    let cy = y as i32;
+// --- High-quality cursor rendering ---
 
-    // Draw a simple arrow cursor
-    for dy in 0..size {
-        let width = (dy as f64 * 0.6) as i32;
-        for dx in 0..=width {
-            let px = cx + dx;
-            let py = cy + dy;
+/// Create a pre-rendered cursor sprite using SDF-based anti-aliasing.
+/// Generates a macOS-style arrow pointer with:
+///   - White fill + black outline (2px) + drop shadow
+///   - Sub-pixel anti-aliased edges via signed distance field
+fn create_cursor_sprite(size: u32) -> RgbaImage {
+    let pad = 6u32; // extra padding for shadow
+    let total = size + pad * 2;
+    let mut img = RgbaImage::new(total, total);
+    let s = size as f64;
+
+    // Arrow cursor vertices (normalized 0..1, origin at top-left)
+    let vertices: [(f64, f64); 7] = [
+        (0.0, 0.0),         // tip
+        (0.0, 0.85),        // left edge bottom
+        (0.22, 0.62),       // notch left
+        (0.52, 0.95),       // tail bottom-right
+        (0.68, 0.82),       // tail top-right
+        (0.38, 0.52),       // notch right
+        (0.58, 0.30),       // right edge
+    ];
+
+    // Scale vertices to pixel coordinates (with padding offset)
+    let pts: Vec<(f64, f64)> = vertices
+        .iter()
+        .map(|(vx, vy)| (vx * s + pad as f64, vy * s + pad as f64))
+        .collect();
+
+    // For each pixel, compute signed distance to the polygon boundary
+    for py in 0..total {
+        for px in 0..total {
+            let x = px as f64 + 0.5;
+            let y = py as f64 + 0.5;
+
+            let dist = signed_distance_to_polygon(&pts, x, y);
+
+            // Shadow (offset +2px down, +1px right, blurred)
+            let shadow_dist = signed_distance_to_polygon(&pts, x - 1.0, y - 2.0);
+            let shadow_alpha = smoothstep(3.0, 0.0, shadow_dist) * 0.4;
+
+            // Black outline: ~2px thick around the edge
+            let outline_width = 1.8;
+            let outline_alpha = smoothstep(0.5, -0.5, dist - outline_width);
+
+            // White fill
+            let fill_alpha = smoothstep(0.5, -0.5, dist);
+
+            // Composite: shadow → outline → fill
+            let mut r = 0.0f64;
+            let mut g = 0.0f64;
+            let mut b = 0.0f64;
+            let mut a = 0.0f64;
+
+            // Shadow layer
+            if shadow_alpha > 0.0 {
+                a = shadow_alpha;
+                // shadow is black
+            }
+
+            // Outline layer (black)
+            if outline_alpha > 0.0 {
+                let sa = outline_alpha;
+                r = r * (1.0 - sa);
+                g = g * (1.0 - sa);
+                b = b * (1.0 - sa);
+                a = sa + a * (1.0 - sa);
+            }
+
+            // Fill layer (white)
+            if fill_alpha > 0.0 {
+                let sa = fill_alpha;
+                let out_a = sa + a * (1.0 - sa);
+                if out_a > 0.0 {
+                    r = (255.0 * sa + r * a * (1.0 - sa)) / out_a;
+                    g = (255.0 * sa + g * a * (1.0 - sa)) / out_a;
+                    b = (255.0 * sa + b * a * (1.0 - sa)) / out_a;
+                    a = out_a;
+                }
+            }
+
+            if a > 0.001 {
+                img.put_pixel(
+                    px,
+                    py,
+                    Rgba([
+                        r.clamp(0.0, 255.0) as u8,
+                        g.clamp(0.0, 255.0) as u8,
+                        b.clamp(0.0, 255.0) as u8,
+                        (a * 255.0).clamp(0.0, 255.0) as u8,
+                    ]),
+                );
+            }
+        }
+    }
+
+    img
+}
+
+/// Signed distance from point to convex polygon.
+/// Negative = inside, positive = outside.
+fn signed_distance_to_polygon(pts: &[(f64, f64)], px: f64, py: f64) -> f64 {
+    let n = pts.len();
+    let mut min_dist_sq = f64::MAX;
+    let mut sign = 1.0;
+
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (ex, ey) = (pts[j].0 - pts[i].0, pts[j].1 - pts[i].1);
+        let (wx, wy) = (px - pts[i].0, py - pts[i].1);
+
+        let t = (wx * ex + wy * ey) / (ex * ex + ey * ey);
+        let t = t.clamp(0.0, 1.0);
+        let dx = wx - ex * t;
+        let dy = wy - ey * t;
+        let dist_sq = dx * dx + dy * dy;
+
+        if dist_sq < min_dist_sq {
+            min_dist_sq = dist_sq;
+        }
+
+        // Winding number test for inside/outside
+        let c1 = pts[i].1 <= py;
+        let c2 = pts[j].1 > py;
+        let c3 = pts[j].1 <= py;
+        let c4 = pts[i].1 > py;
+        let cross = ex * wy - ey * wx;
+
+        if (c1 && c2 && cross > 0.0) || (c3 && c4 && cross < 0.0) {
+            sign = -sign;
+        }
+    }
+
+    sign * min_dist_sq.sqrt()
+}
+
+/// Smooth interpolation for anti-aliasing
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Draw cursor by scaling the pre-rendered sprite and alpha-compositing it.
+fn draw_cursor_sprite(
+    img: &mut RgbaImage,
+    sprite: &RgbaImage,
+    x: f64,
+    y: f64,
+    size_mult: f64,
+) {
+    let target_size = (CURSOR_BASE_SIZE as f64 * size_mult) as u32;
+    if target_size == 0 {
+        return;
+    }
+
+    // Scale sprite to target size (with padding)
+    let pad_ratio = sprite.width() as f64 / CURSOR_BASE_SIZE as f64;
+    let total_size = (target_size as f64 * pad_ratio) as u32;
+
+    let scaled = image::imageops::resize(
+        sprite,
+        total_size.max(1),
+        total_size.max(1),
+        image::imageops::FilterType::Triangle,
+    );
+
+    // Position: cursor tip is at (x, y), offset by scaled padding
+    let pad_px = (6.0 * size_mult) as i32;
+    let start_x = x as i32 - pad_px;
+    let start_y = y as i32 - pad_px;
+
+    for sy in 0..scaled.height() {
+        for sx in 0..scaled.width() {
+            let px = start_x + sx as i32;
+            let py = start_y + sy as i32;
             if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                if dx == 0 || dx == width || dy == size - 1 {
-                    img.put_pixel(px as u32, py as u32, Rgba([0, 0, 0, 255]));
-                } else {
-                    img.put_pixel(px as u32, py as u32, Rgba([255, 255, 255, 255]));
+                let src = scaled.get_pixel(sx, sy);
+                if src[3] > 0 {
+                    let dst = img.get_pixel(px as u32, py as u32);
+                    let blended = blend_pixel(*dst, *src);
+                    img.put_pixel(px as u32, py as u32, blended);
                 }
             }
         }
     }
 }
+
+// --- Click ring with fill ---
 
 fn draw_click_ring(
     img: &mut RgbaImage,
@@ -311,34 +496,46 @@ fn draw_click_ring(
     color: &[u8; 4],
     stroke_width: f64,
 ) {
-    // eased_progress is already ease-out cubic from ClickEffect::progress()
     let radius = max_radius * eased_progress;
-    // Fade out alpha as the ring expands (using linear progress for fade)
-    let alpha = ((1.0 - eased_progress) * color[3] as f64) as u8;
+    // Fade out alpha as the ring expands
+    let base_alpha = (1.0 - eased_progress) * color[3] as f64;
+    let ring_alpha = base_alpha as u8;
+    let fill_alpha = (base_alpha * 0.15) as u8; // subtle inner fill
     let cx = x as i32;
     let cy = y as i32;
     let r = radius as i32;
-    let sw = stroke_width as i32;
+    let sw = stroke_width.ceil() as i32;
 
     for dy in -r - sw..=r + sw {
         for dx in -r - sw..=r + sw {
             let dist = ((dx * dx + dy * dy) as f64).sqrt();
+            let px = cx + dx;
+            let py = cy + dy;
+            if px < 0 || py < 0 || (px as u32) >= img.width() || (py as u32) >= img.height() {
+                continue;
+            }
+
             let ring_dist = (dist - radius).abs();
+
+            if dist <= radius && fill_alpha > 0 {
+                // Inner fill — subtle translucent disc
+                let pixel = img.get_pixel(px as u32, py as u32);
+                let fill_color = Rgba([color[0], color[1], color[2], fill_alpha]);
+                let blended = blend_pixel(*pixel, fill_color);
+                img.put_pixel(px as u32, py as u32, blended);
+            }
+
             if ring_dist <= stroke_width {
-                let px = cx + dx;
-                let py = cy + dy;
-                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                    // Anti-alias the ring edges
-                    let edge_alpha = if ring_dist > stroke_width - 1.0 {
-                        ((stroke_width - ring_dist).max(0.0) * alpha as f64) as u8
-                    } else {
-                        alpha
-                    };
-                    let pixel = img.get_pixel(px as u32, py as u32);
-                    let ring_color = Rgba([color[0], color[1], color[2], edge_alpha]);
-                    let blended = blend_pixel(*pixel, ring_color);
-                    img.put_pixel(px as u32, py as u32, blended);
-                }
+                // Ring stroke with anti-aliased edges
+                let edge_alpha = if ring_dist > stroke_width - 1.0 {
+                    ((stroke_width - ring_dist).max(0.0) * ring_alpha as f64) as u8
+                } else {
+                    ring_alpha
+                };
+                let pixel = img.get_pixel(px as u32, py as u32);
+                let ring_color = Rgba([color[0], color[1], color[2], edge_alpha]);
+                let blended = blend_pixel(*pixel, ring_color);
+                img.put_pixel(px as u32, py as u32, blended);
             }
         }
     }
@@ -438,26 +635,11 @@ fn apply_rounded_corners_aa(img: &mut RgbaImage, radius: u32) {
     }
 }
 
-fn create_background(width: u32, height: u32, _style: &OutputStyle) -> RgbaImage {
-    let mut canvas = RgbaImage::new(width, height);
+// --- Rounded-rectangle drop shadow ---
 
-    // Default gradient background (purple to blue, 135 degrees)
-    let from = [139u8, 92, 246];
-    let to = [59u8, 130, 246];
-
-    for y in 0..height {
-        for x in 0..width {
-            let t = ((x as f64 / width as f64) + (y as f64 / height as f64)) / 2.0;
-            let r = (from[0] as f64 * (1.0 - t) + to[0] as f64 * t) as u8;
-            let g = (from[1] as f64 * (1.0 - t) + to[1] as f64 * t) as u8;
-            let b = (from[2] as f64 * (1.0 - t) + to[2] as f64 * t) as u8;
-            canvas.put_pixel(x, y, Rgba([r, g, b, 255]));
-        }
-    }
-
-    canvas
-}
-
+/// Draw a drop shadow shaped as a rounded rectangle.
+/// Computes distance from each pixel to the nearest point on the rounded rect,
+/// then applies a smooth falloff.
 fn draw_drop_shadow(
     canvas: &mut RgbaImage,
     x: u32,
@@ -467,41 +649,93 @@ fn draw_drop_shadow(
     blur: f64,
     offset_y: f64,
     color: &[u8; 4],
+    border_radius: u32,
 ) {
-    let shadow_y = y as f64 + offset_y;
-    let spread = blur as i32;
+    if color[3] == 0 || blur <= 0.0 {
+        return;
+    }
 
-    for sy in (y as i32 - spread)..=(y as i32 + h as i32 + spread) {
+    let r = border_radius as f64;
+    let shadow_y = y as f64 + offset_y;
+    let spread = blur.ceil() as i32;
+
+    // Shadow rectangle bounds (shifted by offset_y)
+    let rect_left = x as f64;
+    let rect_right = (x + w) as f64;
+    let rect_top = shadow_y;
+    let rect_bottom = shadow_y + h as f64;
+
+    for sy in (y as i32 - spread)..=(y as i32 + h as i32 + spread + offset_y.ceil() as i32) {
         for sx in (x as i32 - spread)..=(x as i32 + w as i32 + spread) {
             if sx < 0 || sy < 0 || sx as u32 >= canvas.width() || sy as u32 >= canvas.height() {
                 continue;
             }
 
-            // Distance from content rectangle
-            let dx = if sx < x as i32 {
-                (x as i32 - sx) as f64
-            } else if sx >= (x + w) as i32 {
-                (sx - (x + w) as i32 + 1) as f64
-            } else {
-                0.0
-            };
+            let px = sx as f64 + 0.5;
+            let py = sy as f64 + 0.5;
 
-            let dy = if (sy as f64) < shadow_y {
-                shadow_y - sy as f64
-            } else if sy as f64 >= shadow_y + h as f64 {
-                sy as f64 - shadow_y - h as f64 + 1.0
-            } else {
-                0.0
-            };
+            // Distance from point to the rounded rectangle
+            let dist = dist_to_rounded_rect(px, py, rect_left, rect_top, rect_right, rect_bottom, r);
 
-            let dist = (dx * dx + dy * dy).sqrt();
             if dist > 0.0 && dist <= blur {
-                let alpha = ((1.0 - dist / blur) * color[3] as f64) as u8;
+                // Smooth quadratic falloff (softer than linear)
+                let t = 1.0 - dist / blur;
+                let alpha = (t * t * color[3] as f64) as u8;
                 let pixel = canvas.get_pixel(sx as u32, sy as u32);
                 let blended = blend_pixel(*pixel, Rgba([color[0], color[1], color[2], alpha]));
                 canvas.put_pixel(sx as u32, sy as u32, blended);
             }
         }
+    }
+}
+
+/// Signed distance from a point to a rounded rectangle.
+/// Returns 0 if inside, positive if outside.
+fn dist_to_rounded_rect(
+    px: f64,
+    py: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    radius: f64,
+) -> f64 {
+    // Clamp to the inner rectangle (inset by radius)
+    let inner_left = left + radius;
+    let inner_right = right - radius;
+    let inner_top = top + radius;
+    let inner_bottom = bottom - radius;
+
+    // Distance to the axis-aligned inner rectangle
+    let dx = if px < inner_left {
+        inner_left - px
+    } else if px > inner_right {
+        px - inner_right
+    } else {
+        0.0
+    };
+
+    let dy = if py < inner_top {
+        inner_top - py
+    } else if py > inner_bottom {
+        py - inner_bottom
+    } else {
+        0.0
+    };
+
+    if dx > 0.0 && dy > 0.0 {
+        // In a corner region — distance to the corner circle
+        let corner_dist = (dx * dx + dy * dy).sqrt();
+        (corner_dist - radius).max(0.0)
+    } else if dx > 0.0 {
+        // Left or right of the inner rect
+        (dx - radius).max(0.0)
+    } else if dy > 0.0 {
+        // Above or below the inner rect
+        (dy - radius).max(0.0)
+    } else {
+        // Inside the rounded rectangle
+        0.0
     }
 }
 
@@ -602,5 +836,52 @@ mod tests {
         assert_eq!(effect.progress(0), 0.0);
         let end_p = effect.progress(400);
         assert!((end_p - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cursor_sprite_generation() {
+        let sprite = create_cursor_sprite(32);
+        assert_eq!(sprite.width(), 32 + 12); // 32 + 2*6 padding
+        assert_eq!(sprite.height(), 32 + 12);
+
+        // Tip of cursor (at padding offset) should have some opacity
+        let tip = sprite.get_pixel(6, 6);
+        assert!(tip[3] > 0, "Cursor tip should be visible");
+
+        // Far corner should be transparent
+        let corner = sprite.get_pixel(0, 0);
+        assert!(corner[3] < 10, "Corner should be mostly transparent, got alpha {}", corner[3]);
+    }
+
+    #[test]
+    fn test_dist_to_rounded_rect() {
+        // Inside should be 0
+        assert_eq!(dist_to_rounded_rect(50.0, 50.0, 0.0, 0.0, 100.0, 100.0, 10.0), 0.0);
+
+        // Outside on edge (no corner) should be positive
+        let d = dist_to_rounded_rect(110.0, 50.0, 0.0, 0.0, 100.0, 100.0, 10.0);
+        assert!(d > 0.0, "Outside should be positive: {}", d);
+
+        // Corner region — diagonal distance
+        let d = dist_to_rounded_rect(105.0, 105.0, 0.0, 0.0, 100.0, 100.0, 10.0);
+        assert!(d > 0.0, "Outside corner should be positive: {}", d);
+
+        // Inside near corner should still be 0
+        let d = dist_to_rounded_rect(93.0, 93.0, 0.0, 0.0, 100.0, 100.0, 10.0);
+        assert_eq!(d, 0.0, "Inside near corner should be 0: {}", d);
+    }
+
+    #[test]
+    fn test_signed_distance_polygon() {
+        // Simple triangle
+        let triangle = vec![(0.0, 0.0), (10.0, 0.0), (5.0, 10.0)];
+
+        // Center should be inside (negative)
+        let d = signed_distance_to_polygon(&triangle, 5.0, 3.0);
+        assert!(d < 0.0, "Center should be inside: {}", d);
+
+        // Far away should be outside (positive)
+        let d = signed_distance_to_polygon(&triangle, 50.0, 50.0);
+        assert!(d > 0.0, "Far away should be outside: {}", d);
     }
 }
