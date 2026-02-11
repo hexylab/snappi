@@ -39,6 +39,12 @@ pub fn run() {
             commands::save_settings,
             commands::delete_recording,
             commands::get_recording_thumbnail,
+            commands::list_windows,
+            commands::get_zoom_keyframes,
+            commands::get_recording_scenes,
+            commands::export_with_keyframes,
+            commands::get_recording_events,
+            commands::apply_scene_edits,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

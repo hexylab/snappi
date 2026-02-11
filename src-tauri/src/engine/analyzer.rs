@@ -8,6 +8,7 @@ pub enum SegmentType {
     Scroll,
     Idle,
     RapidAction,
+    Drag,
 }
 
 /// Sub-classification for idle duration
@@ -25,7 +26,7 @@ pub struct FocusPoint {
     pub region: Option<Rect>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
@@ -54,9 +55,9 @@ pub struct Segment {
 }
 
 // Idle detection thresholds (using significant events only)
-const IDLE_SHORT_MS: u64 = 800;
-const IDLE_MEDIUM_MS: u64 = 2000;
-const IDLE_LONG_MS: u64 = 5000;
+const IDLE_SHORT_MS: u64 = 1000;
+const IDLE_MEDIUM_MS: u64 = 3000;
+const IDLE_LONG_MS: u64 = 6000;
 
 const RAPID_ACTION_WINDOW_MS: u64 = 200;
 const RAPID_ACTION_MIN_CLICKS: usize = 3;
@@ -372,7 +373,113 @@ pub fn event_timestamp(event: &RecordingEvent) -> u64 {
         RecordingEvent::Scroll { t, .. } => *t,
         RecordingEvent::Focus { t, .. } => *t,
         RecordingEvent::WindowFocus { t, .. } => *t,
+        RecordingEvent::UiFocus { t, .. } => *t,
+        RecordingEvent::UiMenuOpen { t, .. } => *t,
+        RecordingEvent::UiMenuClose { t, .. } => *t,
+        RecordingEvent::UiDialogOpen { t, .. } => *t,
+        RecordingEvent::UiDialogClose { t, .. } => *t,
     }
+}
+
+/// A segment with an importance score for zoom filtering.
+#[derive(Debug, Clone)]
+pub struct ScoredSegment {
+    pub segment: Segment,
+    pub importance: f64,
+}
+
+/// Assign importance scores to segments based on context.
+/// Higher scores indicate more important zoom targets.
+pub fn score_segments(segments: &[Segment]) -> Vec<ScoredSegment> {
+    segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let mut importance: f64 = match seg.segment_type {
+                SegmentType::Click => {
+                    let mut score = 0.3;
+
+                    // Window change → high importance
+                    if seg.window_changed {
+                        score += 0.4;
+                    }
+
+                    // Large spatial distance from previous segment → new context
+                    if i > 0 {
+                        if let (Some(prev_fp), Some(curr_fp)) =
+                            (&segments[i - 1].focus_point, &seg.focus_point)
+                        {
+                            let dist = ((curr_fp.x - prev_fp.x).powi(2)
+                                + (curr_fp.y - prev_fp.y).powi(2))
+                            .sqrt();
+                            if dist > 300.0 {
+                                score += 0.2;
+                            }
+                        }
+                    }
+
+                    // Click after long idle → start of new operation
+                    if i > 0 && segments[i - 1].segment_type == SegmentType::Idle {
+                        match segments[i - 1].idle_level {
+                            Some(IdleLevel::Long) => score += 0.3,
+                            Some(IdleLevel::Medium) => score += 0.15,
+                            _ => {}
+                        }
+                    }
+
+                    score
+                }
+                SegmentType::TextInput => 0.8,
+                SegmentType::Drag => 0.6,
+                SegmentType::Scroll => 0.1,
+                SegmentType::RapidAction => 0.1,
+                SegmentType::Idle => match seg.idle_level {
+                    Some(IdleLevel::Long) => 0.5,
+                    Some(IdleLevel::Medium) => 0.3,
+                    _ => 0.0,
+                },
+            };
+
+            importance = importance.min(1.0);
+
+            ScoredSegment {
+                segment: seg.clone(),
+                importance,
+            }
+        })
+        .collect()
+}
+
+/// Convert preprocessor drag events into Drag segments.
+/// These get merged with the normal segments and scored.
+pub fn drags_to_segments(drags: &[super::preprocessor::DragEvent]) -> Vec<Segment> {
+    drags
+        .iter()
+        .map(|drag| {
+            let min_x = drag.start_x.min(drag.end_x);
+            let min_y = drag.start_y.min(drag.end_y);
+            let max_x = drag.start_x.max(drag.end_x);
+            let max_y = drag.start_y.max(drag.end_y);
+            Segment {
+                segment_type: SegmentType::Drag,
+                start_ms: drag.start_ms,
+                end_ms: drag.end_ms,
+                focus_point: Some(FocusPoint {
+                    x: (drag.start_x + drag.end_x) / 2.0,
+                    y: (drag.start_y + drag.end_y) / 2.0,
+                    region: Some(Rect {
+                        x: min_x,
+                        y: min_y,
+                        width: max_x - min_x,
+                        height: max_y - min_y,
+                    }),
+                }),
+                idle_level: None,
+                window_rect: None,
+                window_changed: false,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -418,7 +525,7 @@ mod tests {
         for i in 1..=100 {
             events.push(mouse_move(i * 10, 100.0 + i as f64, 100.0));
         }
-        events.push(click(2000, 200.0, 200.0));
+        events.push(click(4000, 200.0, 200.0));
 
         let segments = analyze_events(&events);
         let idle_segments: Vec<_> = segments

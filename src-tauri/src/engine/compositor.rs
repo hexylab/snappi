@@ -1,15 +1,15 @@
 use super::effects::background::create_background_image;
 use super::spring::AnimatedViewport;
-use super::zoom_planner::{TransitionType, ZoomKeyframe};
+use super::zoom_planner::ZoomKeyframe;
 use crate::config::defaults::OutputStyle;
 use image::{Rgba, RgbaImage};
 
-/// Dead Zone / Soft Zone / Push Zone boundaries (normalized 0-1)
-const DEAD_ZONE_RADIUS: f64 = 0.3;
-const SOFT_ZONE_RADIUS: f64 = 0.7;
-
 /// Cursor sprite base size in pixels (before zoom scaling)
 const CURSOR_BASE_SIZE: u32 = 32;
+
+/// Embedded custom cursor PNG (icon/カーソル.png) and its hotspot
+const EMBEDDED_CURSOR_PNG: &[u8] = include_bytes!("../../../icon/カーソル.png");
+const EMBEDDED_CURSOR_HOTSPOT: (u32, u32) = (35, 22);
 
 pub struct Compositor {
     style: OutputStyle,
@@ -22,6 +22,12 @@ pub struct Compositor {
     cursor_sprite: RgbaImage,
     /// Cursor hotspot offset within sprite (tip position)
     cursor_hotspot: (u32, u32),
+    /// Previous composed frame for motion blur
+    prev_output: Option<RgbaImage>,
+    /// Previous viewport state for motion amount calculation
+    prev_vp_center: Option<(f64, f64, f64)>, // (cx, cy, zoom)
+    /// Whether motion blur is enabled
+    motion_blur_enabled: bool,
 }
 
 impl Compositor {
@@ -31,14 +37,20 @@ impl Compositor {
             screen_height as f64,
         );
 
-        let (cursor_sprite, cursor_hotspot) =
-            match capture_system_cursor_sprite() {
-                Some((img, hx, hy)) => (img, (hx, hy)),
-                None => {
-                    let sprite = create_cursor_sprite(CURSOR_BASE_SIZE);
-                    (sprite, (6, 6))
-                }
-            };
+        // Load embedded cursor PNG, fallback to system capture, then to SDF sprite
+        let (cursor_sprite, cursor_hotspot) = load_embedded_cursor()
+            .or_else(|| {
+                log::info!("Embedded cursor decode failed, trying system capture");
+                capture_system_cursor_sprite()
+                    .map(|(img, hx, hy)| {
+                        log::info!("System cursor captured: {}x{}", img.width(), img.height());
+                        (img, (hx, hy))
+                    })
+            })
+            .unwrap_or_else(|| {
+                log::warn!("All cursor sources failed, using fallback SDF sprite");
+                (create_cursor_sprite(CURSOR_BASE_SIZE), (6, 6))
+            });
 
         Self {
             style,
@@ -48,27 +60,64 @@ impl Compositor {
             cached_background: None,
             cursor_sprite,
             cursor_hotspot,
+            prev_output: None,
+            prev_vp_center: None,
+            motion_blur_enabled: false,
         }
     }
 
+    /// Load a custom cursor from a PNG file path.
+    /// Returns true if loaded successfully.
+    pub fn set_cursor_from_path(&mut self, path: &str, hotspot_x: u32, hotspot_y: u32) -> bool {
+        match image::open(path) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                log::info!("Custom cursor loaded: {}x{} from '{}' hotspot=({},{})",
+                    rgba.width(), rgba.height(), path, hotspot_x, hotspot_y);
+                self.cursor_sprite = rgba;
+                self.cursor_hotspot = (hotspot_x, hotspot_y);
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to load custom cursor from '{}': {}", path, e);
+                false
+            }
+        }
+    }
+
+    /// Try to capture the Windows system cursor.
+    /// Returns true if captured successfully.
+    pub fn set_cursor_from_system(&mut self) -> bool {
+        match capture_system_cursor_sprite() {
+            Some((img, hx, hy)) => {
+                log::info!("System cursor captured: {}x{} hotspot=({},{})",
+                    img.width(), img.height(), hx, hy);
+                self.cursor_sprite = img;
+                self.cursor_hotspot = (hx, hy);
+                true
+            }
+            None => {
+                log::warn!("System cursor capture failed, keeping current sprite");
+                false
+            }
+        }
+    }
+
+    pub fn set_motion_blur(&mut self, enabled: bool) {
+        self.motion_blur_enabled = enabled;
+    }
+
     pub fn apply_keyframe(&mut self, kf: &ZoomKeyframe) {
-        match kf.transition {
-            TransitionType::Cut => {
-                self.viewport.snap_to(kf.target_x, kf.target_y, kf.zoom_level);
-            }
-            _ => {
-                if let Some(ref hint) = kf.spring_hint {
-                    self.viewport.set_target_with_half_life(
-                        kf.target_x,
-                        kf.target_y,
-                        kf.zoom_level,
-                        hint.zoom_half_life,
-                        hint.pan_half_life,
-                    );
-                } else {
-                    self.viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level);
-                }
-            }
+        if let Some(ref hint) = kf.spring_hint {
+            self.viewport.set_target_with_half_life(
+                kf.target_x,
+                kf.target_y,
+                kf.zoom_level,
+                hint.zoom_half_life,
+                hint.pan_half_life,
+            );
+        } else {
+            self.viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level);
         }
     }
 
@@ -81,11 +130,6 @@ impl Compositor {
         key_overlay: Option<&KeyOverlay>,
         dt: f64,
     ) -> RgbaImage {
-        // (0) Dead Zone cursor tracking — update viewport target before spring update
-        if let Some((cx, cy)) = cursor_pos {
-            self.apply_cursor_follow(cx, cy);
-        }
-
         // (1) Update spring animation
         self.viewport.update(dt);
 
@@ -188,46 +232,34 @@ impl Compositor {
         // Composite the output frame onto the canvas
         composite(&mut canvas, &output, offset_x, offset_y);
 
+        // Motion blur: blend with previous frame when viewport is moving fast
+        if self.motion_blur_enabled {
+            let current_vp = (
+                self.viewport.center_x.position,
+                self.viewport.center_y.position,
+                self.viewport.zoom.position,
+            );
+
+            if let (Some(ref prev_frame), Some(prev_vp)) = (&self.prev_output, self.prev_vp_center) {
+                if prev_frame.dimensions() == canvas.dimensions() {
+                    let dx = (current_vp.0 - prev_vp.0) / self.screen_width;
+                    let dy = (current_vp.1 - prev_vp.1) / self.screen_height;
+                    let dz = (current_vp.2 - prev_vp.2).abs();
+                    let motion = (dx * dx + dy * dy).sqrt() + dz;
+
+                    // Only apply blur when motion exceeds threshold
+                    if motion > 0.005 {
+                        let blend_amount = (motion * 3.0).min(0.35);
+                        motion_blur_blend(&mut canvas, prev_frame, blend_amount);
+                    }
+                }
+            }
+
+            self.prev_vp_center = Some(current_vp);
+            self.prev_output = Some(canvas.clone());
+        }
+
         canvas
-    }
-
-    /// Apply Dead Zone / Soft Zone / Push Zone cursor tracking.
-    /// Adjusts viewport center target based on cursor distance from center.
-    fn apply_cursor_follow(&mut self, cursor_x: f64, cursor_y: f64) {
-        let zoom = self.viewport.zoom.position.max(1.0);
-        if zoom <= 1.01 {
-            return; // No tracking needed at 1x zoom
-        }
-
-        let vp_w = self.screen_width / zoom;
-        let vp_h = self.screen_height / zoom;
-
-        let cx = self.viewport.center_x.target;
-        let cy = self.viewport.center_y.target;
-
-        // Normalized cursor offset from viewport center
-        let dx = (cursor_x - cx) / (vp_w / 2.0);
-        let dy = (cursor_y - cy) / (vp_h / 2.0);
-        let d = (dx * dx + dy * dy).sqrt();
-
-        let strength = follow_strength(d, DEAD_ZONE_RADIUS, SOFT_ZONE_RADIUS);
-
-        if strength > 0.0 {
-            let shift_x = strength * (cursor_x - cx);
-            let shift_y = strength * (cursor_y - cy);
-
-            let new_x = cx + shift_x;
-            let new_y = cy + shift_y;
-
-            // Clamp to screen bounds
-            let half_w = vp_w / 2.0;
-            let half_h = vp_h / 2.0;
-            let clamped_x = new_x.clamp(half_w, self.screen_width - half_w);
-            let clamped_y = new_y.clamp(half_h, self.screen_height - half_h);
-
-            self.viewport.center_x.set_target(clamped_x);
-            self.viewport.center_y.set_target(clamped_y);
-        }
     }
 
     fn get_or_create_background(&mut self) -> &RgbaImage {
@@ -239,19 +271,6 @@ impl Compositor {
             ));
         }
         self.cached_background.as_ref().unwrap()
-    }
-}
-
-/// Smoothstep-based follow strength for the 3-zone model.
-/// Returns 0.0 in dead zone, smoothstep 0→1 in soft zone, 1.0 in push zone.
-fn follow_strength(d: f64, dead_zone: f64, soft_zone: f64) -> f64 {
-    if d < dead_zone {
-        0.0
-    } else if d < soft_zone {
-        let t = (d - dead_zone) / (soft_zone - dead_zone);
-        t * t * (3.0 - 2.0 * t) // smoothstep (C^1 continuous)
-    } else {
-        1.0
     }
 }
 
@@ -477,11 +496,12 @@ fn draw_cursor_sprite(
         return;
     }
 
+    // Use CatmullRom for high-quality cursor scaling (better than Triangle for sharp edges)
     let scaled = image::imageops::resize(
         sprite,
         target_w.max(1),
         target_h.max(1),
-        image::imageops::FilterType::Triangle,
+        image::imageops::FilterType::CatmullRom,
     );
 
     let hotspot_x = (hotspot.0 as f64 * scale) as i32;
@@ -776,6 +796,21 @@ fn composite(canvas: &mut RgbaImage, overlay: &RgbaImage, offset_x: u32, offset_
     }
 }
 
+/// Blend current frame with previous frame for motion blur effect.
+/// `amount` controls blur intensity (0.0 = no blur, 0.35 = max blur).
+fn motion_blur_blend(current: &mut RgbaImage, prev: &RgbaImage, amount: f64) {
+    let amount = amount.clamp(0.0, 0.5);
+    let curr_weight = 1.0 - amount;
+    let prev_weight = amount;
+
+    for (c_pixel, p_pixel) in current.pixels_mut().zip(prev.pixels()) {
+        c_pixel[0] = (c_pixel[0] as f64 * curr_weight + p_pixel[0] as f64 * prev_weight) as u8;
+        c_pixel[1] = (c_pixel[1] as f64 * curr_weight + p_pixel[1] as f64 * prev_weight) as u8;
+        c_pixel[2] = (c_pixel[2] as f64 * curr_weight + p_pixel[2] as f64 * prev_weight) as u8;
+        c_pixel[3] = (c_pixel[3] as f64 * curr_weight + p_pixel[3] as f64 * prev_weight) as u8;
+    }
+}
+
 fn blend_pixel(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
     let sa = src[3] as f64 / 255.0;
     let da = dst[3] as f64 / 255.0;
@@ -792,8 +827,25 @@ fn blend_pixel(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
     Rgba([r as u8, g as u8, b as u8, (out_a * 255.0) as u8])
 }
 
+/// Load the embedded cursor PNG (compiled into the binary).
+fn load_embedded_cursor() -> Option<(RgbaImage, (u32, u32))> {
+    let cursor = image::load_from_memory_with_format(
+        EMBEDDED_CURSOR_PNG,
+        image::ImageFormat::Png,
+    ).ok()?;
+    let rgba = cursor.to_rgba8();
+    log::info!("Embedded cursor loaded: {}x{} hotspot=({},{})",
+        rgba.width(), rgba.height(),
+        EMBEDDED_CURSOR_HOTSPOT.0, EMBEDDED_CURSOR_HOTSPOT.1);
+    Some((rgba, EMBEDDED_CURSOR_HOTSPOT))
+}
+
 /// Capture the system cursor bitmap via Windows API.
 /// Returns (cursor_image, hotspot_x, hotspot_y) or None on failure.
+///
+/// Uses GetIconInfo to extract the color and mask bitmaps, then combines them
+/// for proper alpha transparency. Falls back to mask-based reconstruction
+/// if the color bitmap has no alpha channel.
 #[cfg(windows)]
 fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -825,7 +877,7 @@ fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
 
         let hdc = CreateCompatibleDC(None);
 
-        // Query dimensions
+        // Query dimensions of color bitmap
         let mut bmp_info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -849,7 +901,7 @@ fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
             return None;
         }
 
-        // Read pixel data top-down
+        // Read color pixel data top-down
         bmp_info.bmiHeader.biHeight = -(height as i32);
         bmp_info.bmiHeader.biWidth = width as i32;
         let mut pixels = vec![0u8; (width * height * 4) as usize];
@@ -868,9 +920,45 @@ fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
             chunk.swap(0, 2);
         }
 
-        // If all alpha values are 0, set alpha based on pixel brightness
-        let all_alpha_zero = pixels.chunks_exact(4).all(|c| c[3] == 0);
-        if all_alpha_zero {
+        // Check if color bitmap has valid alpha channel
+        let has_alpha = pixels.chunks_exact(4).any(|c| c[3] != 0);
+
+        if !has_alpha && !hbm_mask.is_invalid() {
+            // Color bitmap has no alpha — use the mask bitmap to generate alpha.
+            // The AND mask: 1 = transparent, 0 = opaque
+            let mut mask_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut mask_pixels = vec![0u8; (width * height * 4) as usize];
+            GetDIBits(
+                hdc,
+                hbm_mask,
+                0,
+                height,
+                Some(mask_pixels.as_mut_ptr() as *mut _),
+                &mut mask_info,
+                DIB_RGB_COLORS,
+            );
+
+            // Apply mask: where mask pixel is black (0), cursor is opaque
+            for (color, mask) in pixels.chunks_exact_mut(4).zip(mask_pixels.chunks_exact(4)) {
+                // mask is BGRA — if R/G/B are all 0, cursor pixel is opaque
+                if mask[0] == 0 && mask[1] == 0 && mask[2] == 0 {
+                    color[3] = 255; // opaque
+                } else {
+                    color[3] = 0; // transparent
+                }
+            }
+        } else if !has_alpha {
+            // No mask bitmap — set alpha based on pixel content
             for chunk in pixels.chunks_exact_mut(4) {
                 if chunk[0] > 0 || chunk[1] > 0 || chunk[2] > 0 {
                     chunk[3] = 255;
@@ -898,41 +986,6 @@ fn capture_system_cursor_sprite() -> Option<(RgbaImage, u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_follow_strength_dead_zone() {
-        assert_eq!(follow_strength(0.0, 0.3, 0.7), 0.0);
-        assert_eq!(follow_strength(0.2, 0.3, 0.7), 0.0);
-        assert_eq!(follow_strength(0.29, 0.3, 0.7), 0.0);
-    }
-
-    #[test]
-    fn test_follow_strength_soft_zone() {
-        let s = follow_strength(0.5, 0.3, 0.7);
-        assert!(s > 0.0 && s < 1.0, "Soft zone should be partial: {}", s);
-
-        // Smoothstep at midpoint (t=0.5) should be 0.5
-        let mid = follow_strength(0.5, 0.3, 0.7);
-        assert!((mid - 0.5).abs() < 0.01, "Midpoint should be ~0.5: {}", mid);
-    }
-
-    #[test]
-    fn test_follow_strength_push_zone() {
-        assert_eq!(follow_strength(0.7, 0.3, 0.7), 1.0);
-        assert_eq!(follow_strength(0.9, 0.3, 0.7), 1.0);
-        assert_eq!(follow_strength(1.5, 0.3, 0.7), 1.0);
-    }
-
-    #[test]
-    fn test_follow_strength_monotonic() {
-        let mut prev = 0.0;
-        for i in 0..100 {
-            let d = i as f64 / 100.0;
-            let s = follow_strength(d, 0.3, 0.7);
-            assert!(s >= prev, "follow_strength should be monotonically increasing");
-            prev = s;
-        }
-    }
 
     #[test]
     fn test_ease_out_cubic() {

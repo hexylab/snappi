@@ -6,6 +6,11 @@ import type {
   QualityPreset,
   ExportProgress,
   AppSettings,
+  WindowInfo,
+  ZoomKeyframe,
+  SceneInfo,
+  TimelineEvent,
+  SceneEditOp,
 } from "./types";
 
 export async function startRecording(): Promise<void> {
@@ -36,7 +41,7 @@ export async function exportRecording(
   recordingId: string,
   format: ExportFormat,
   quality: QualityPreset
-): Promise<string> {
+): Promise<void> {
   return invoke("export_recording", {
     recordingId,
     format,
@@ -64,4 +69,47 @@ export async function getRecordingThumbnail(
   recordingId: string
 ): Promise<string> {
   return invoke("get_recording_thumbnail", { recordingId });
+}
+
+export async function listWindows(): Promise<WindowInfo[]> {
+  return invoke("list_windows");
+}
+
+export async function getZoomKeyframes(
+  recordingId: string
+): Promise<ZoomKeyframe[]> {
+  return invoke("get_zoom_keyframes", { recordingId });
+}
+
+export async function getRecordingScenes(
+  recordingId: string
+): Promise<SceneInfo[]> {
+  return invoke("get_recording_scenes", { recordingId });
+}
+
+export async function getRecordingEvents(
+  recordingId: string
+): Promise<TimelineEvent[]> {
+  return invoke("get_recording_events", { recordingId });
+}
+
+export async function exportWithKeyframes(
+  recordingId: string,
+  keyframes: ZoomKeyframe[],
+  format: ExportFormat,
+  quality: QualityPreset
+): Promise<void> {
+  return invoke("export_with_keyframes", {
+    recordingId,
+    keyframes,
+    format,
+    quality,
+  });
+}
+
+export async function applySceneEdits(
+  recordingId: string,
+  edits: SceneEditOp[]
+): Promise<{ scenes: SceneInfo[]; keyframes: ZoomKeyframe[] }> {
+  return invoke("apply_scene_edits", { recordingId, edits });
 }

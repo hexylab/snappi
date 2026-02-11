@@ -60,17 +60,17 @@ impl Spring {
 pub struct SpringHalfLife;
 
 impl SpringHalfLife {
-    pub const VIEWPORT_PAN: f64 = 0.15;
-    pub const WINDOW_PAN: f64 = 0.20;
+    pub const VIEWPORT_PAN: f64 = 0.22;
+    pub const WINDOW_PAN: f64 = 0.25;
 
-    pub const ZOOM_IN_FAST: f64 = 0.12;
-    pub const ZOOM_IN: f64 = 0.20;
-    pub const ZOOM_IN_SLOW: f64 = 0.28;
+    pub const ZOOM_IN_FAST: f64 = 0.18;
+    pub const ZOOM_IN: f64 = 0.25;
+    pub const ZOOM_IN_SLOW: f64 = 0.30;
 
-    pub const ZOOM_OUT: f64 = 0.25;
-    pub const ZOOM_OUT_SLOW: f64 = 0.35;
+    pub const ZOOM_OUT: f64 = 0.35;
+    pub const ZOOM_OUT_SLOW: f64 = 0.40;
 
-    pub const WINDOW_ZOOM: f64 = 0.25;
+    pub const WINDOW_ZOOM: f64 = 0.30;
 
     pub const CURSOR_SMOOTHING: f64 = 0.05;
 }

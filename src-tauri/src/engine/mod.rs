@@ -1,7 +1,10 @@
 pub mod analyzer;
 pub mod compositor;
 pub mod cursor_smoother;
+pub mod frame_differ;
 pub mod preprocessor;
+pub mod scene_splitter;
 pub mod spring;
+pub mod ui_context;
 pub mod zoom_planner;
 pub mod effects;
