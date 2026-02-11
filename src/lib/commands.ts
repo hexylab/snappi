@@ -113,3 +113,11 @@ export async function applySceneEdits(
 ): Promise<{ scenes: SceneInfo[]; keyframes: ZoomKeyframe[] }> {
   return invoke("apply_scene_edits", { recordingId, edits });
 }
+
+export async function computeActivityCenter(
+  recordingId: string,
+  startMs: number,
+  endMs: number,
+): Promise<{ center_x: number; center_y: number; zoom_level: number }> {
+  return invoke("compute_activity_center", { recordingId, startMs, endMs });
+}

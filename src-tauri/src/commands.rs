@@ -322,6 +322,28 @@ pub fn apply_scene_edits(
     }))
 }
 
+/// Compute activity center and zoom for a time range.
+/// Used by frontend when merging/adding zoom segments.
+#[tauri::command]
+pub fn compute_activity_center(
+    recording_id: String,
+    start_ms: u64,
+    end_ms: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let (cx, cy, zoom) =
+        crate::export::encoder::compute_activity_center_for_recording(
+            &recording_id, start_ms, end_ms, &settings,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "center_x": cx,
+        "center_y": cy,
+        "zoom_level": zoom,
+    }))
+}
+
 /// Export with custom keyframes from timeline UI.
 #[tauri::command]
 pub async fn export_with_keyframes(

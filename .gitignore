@@ -30,3 +30,6 @@ src-tauri/ffmpeg/ffmpeg.exe
 
 # Reference repos
 .reference/
+
+# Dev screenshots
+current-ui.png
