@@ -28,11 +28,6 @@
           "allow": ["**"]
         }
       }
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "Snappi - Screen Recorder"
     }
   },
   "bundle": {

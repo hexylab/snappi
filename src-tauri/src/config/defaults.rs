@@ -20,6 +20,7 @@ impl Default for RecordingSettings {
             capture_system_audio: true,
             capture_microphone: false,
             max_duration_seconds: 300, // 5 minutes
+            recording_mode: RecordingMode::Display,
         }
     }
 }
@@ -35,7 +36,10 @@ impl Default for StyleSettings {
             border_radius: 12,
             shadow_enabled: true,
             shadow_blur: 40.0,
-            shadow_offset_y: 10.0,
+            shadow_offset_y: 0.0,
+            cursor_image_path: None,
+            cursor_hotspot_x: 0,
+            cursor_hotspot_y: 0,
         }
     }
 }
@@ -46,11 +50,22 @@ impl Default for EffectsSettings {
             auto_zoom_enabled: true,
             default_zoom_level: 2.0,
             text_input_zoom_level: 2.5,
-            max_zoom: 3.0,
+            max_zoom: 2.0,
             idle_timeout_ms: 1500,
             click_ring_enabled: true,
             key_badge_enabled: true,
             cursor_smoothing: true,
+            zoom_intensity: ZoomIntensity::default(),
+            animation_speed: AnimationSpeed::default(),
+            smart_zoom_enabled: true,
+            motion_blur_enabled: false,
+            frame_diff_enabled: true,
+            idle_zoom_out_ms: 5000,
+            idle_overview_ms: 8000,
+            min_workarea_dwell_ms: 2000,
+            min_window_dwell_ms: 1500,
+            cluster_lifetime_ms: 5000,
+            cluster_stability_ms: 1000,
         }
     }
 }
@@ -96,7 +111,7 @@ impl Default for OutputStyle {
             canvas_height: 1208,
             border_radius: 12,
             shadow_blur: 40.0,
-            shadow_offset_y: 10.0,
+            shadow_offset_y: 0.0,
             shadow_color: [0, 0, 0, 80],
             background: BackgroundConfig::Gradient {
                 from: [139, 92, 246],

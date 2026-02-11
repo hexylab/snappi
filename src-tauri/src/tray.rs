@@ -1,4 +1,5 @@
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager,
@@ -11,7 +12,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let menu = Menu::with_items(app, &[&start_recording, &settings, &quit])?;
 
+    // Embed icon at compile time and decode to RGBA
+    let icon_png = include_bytes!("../icons/icon.png");
+    let img = image::load_from_memory(icon_png)?.to_rgba8();
+    let (width, height) = img.dimensions();
+    let icon = Image::new_owned(img.into_raw(), width, height);
+
     TrayIconBuilder::new()
+        .icon(icon)
         .menu(&menu)
         .tooltip("Snappi - Screen Recorder")
         .on_menu_event(|app, event| match event.id.as_ref() {

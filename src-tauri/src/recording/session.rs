@@ -1,4 +1,4 @@
-use crate::config::{AppSettings, RecordingInfo, RecordingMeta};
+use crate::config::{AppSettings, RecordingInfo, RecordingMeta, RecordingMode};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ pub struct RecordingSession {
     is_paused: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<std::time::Instant>>>,
     fps: u32,
+    recording_mode: RecordingMode,
 }
 
 impl RecordingSession {
@@ -29,6 +30,7 @@ impl RecordingSession {
             is_paused: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
             fps: settings.recording.fps,
+            recording_mode: settings.recording.recording_mode.clone(),
         })
     }
 
@@ -41,14 +43,26 @@ impl RecordingSession {
         *self.start_time.lock().unwrap() = Some(std::time::Instant::now());
         log::info!("Recording started: {}", self.id);
 
-        // Start capture thread
+        // Start capture thread (mode-dependent)
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
         let fps = self.fps;
+        let mode = self.recording_mode.clone();
         std::thread::spawn(move || {
-            if let Err(e) = super::capture::capture_screen(running, paused, &dir, fps) {
-                log::error!("Screen capture error: {}", e);
+            let result = match mode {
+                RecordingMode::Window { hwnd, .. } => {
+                    super::capture::capture_window(running, paused, &dir, fps, hwnd)
+                }
+                RecordingMode::Area { x, y, width, height } => {
+                    super::capture::capture_area(running, paused, &dir, fps, x, y, width, height)
+                }
+                RecordingMode::Display => {
+                    super::capture::capture_screen(running, paused, &dir, fps)
+                }
+            };
+            if let Err(e) = result {
+                log::error!("Capture error: {}", e);
             }
         });
 
@@ -82,6 +96,16 @@ impl RecordingSession {
             }
         });
 
+        // Start UI Automation tracker thread (best-effort, failure doesn't block recording)
+        let running = self.is_running.clone();
+        let paused = self.is_paused.clone();
+        let dir = self.recording_dir.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = super::ui_tracker::track_ui_events(running, paused, &dir) {
+                log::warn!("UI tracker error (non-fatal): {}", e);
+            }
+        });
+
         Ok(())
     }
 
@@ -105,8 +129,18 @@ impl RecordingSession {
         let has_audio = audio_path.exists()
             && std::fs::metadata(&audio_path).map(|m| m.len() > 44).unwrap_or(false);
 
+        let (mode_str, win_title, win_rect) = match &self.recording_mode {
+            RecordingMode::Display => (Some("display".to_string()), None, None),
+            RecordingMode::Window { title, rect, .. } => {
+                (Some("window".to_string()), Some(title.clone()), Some(*rect))
+            }
+            RecordingMode::Area { x, y, width, height } => {
+                (Some("area".to_string()), None, Some([*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64]))
+            }
+        };
+
         let meta = RecordingMeta {
-            version: 1,
+            version: 2,
             id: self.id.clone(),
             screen_width,
             screen_height,
@@ -116,6 +150,9 @@ impl RecordingSession {
             has_audio,
             monitor_scale: 1.0,
             recording_dir: self.recording_dir.to_string_lossy().to_string(),
+            recording_mode: mode_str,
+            window_title: win_title,
+            window_initial_rect: win_rect,
         };
 
         let meta_path = self.recording_dir.join("meta.json");
@@ -169,12 +206,27 @@ pub fn list_recordings() -> Result<Vec<RecordingInfo>> {
             if meta_path.exists() {
                 let content = std::fs::read_to_string(&meta_path)?;
                 if let Ok(meta) = serde_json::from_str::<RecordingMeta>(&content) {
+                    let fc_path = entry.path().join("frame_count.txt");
+                    let frame_count = std::fs::read_to_string(&fc_path)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    let thumb_path = entry.path().join("thumbnail.png");
+                    let thumbnail_path = if thumb_path.exists() {
+                        Some(thumb_path.to_string_lossy().to_string())
+                    } else {
+                        // Auto-generate thumbnail if frames exist
+                        crate::export::encoder::generate_thumbnail(&meta.id).ok()
+                    };
                     recordings.push(RecordingInfo {
                         id: meta.id,
                         date: meta.start_time,
                         duration_ms: meta.duration_ms,
-                        thumbnail_path: None,
+                        frame_count,
+                        thumbnail_path,
                         recording_dir: meta.recording_dir,
+                        screen_width: meta.screen_width,
+                        screen_height: meta.screen_height,
                     });
                 }
             }

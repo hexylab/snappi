@@ -27,3 +27,6 @@ src-tauri/ffmpeg/ffmpeg.exe
 
 # Claude settings
 .claude/
+
+# Reference repos
+.reference/
