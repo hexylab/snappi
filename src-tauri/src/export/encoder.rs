@@ -305,6 +305,36 @@ pub fn apply_scene_edits_for_recording(
     Ok((edited_scenes, keyframes))
 }
 
+/// Compute activity center for a time range (used by frontend segment merge/add).
+pub fn compute_activity_center_for_recording(
+    recording_id: &str,
+    start_ms: u64,
+    end_ms: u64,
+    settings: &AppSettings,
+) -> Result<(f64, f64, f64)> {
+    let recording_dir = dirs::video_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Snappi")
+        .join("recordings")
+        .join(recording_id);
+
+    let meta_path = recording_dir.join("meta.json");
+    let meta_str = std::fs::read_to_string(&meta_path)?;
+    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
+
+    let raw_events = load_events(&recording_dir).unwrap_or_default();
+    let preprocessed = preprocess(&raw_events);
+
+    Ok(scene_splitter::compute_activity_center(
+        &preprocessed.events,
+        start_ms,
+        end_ms,
+        meta.screen_width as f64,
+        meta.screen_height as f64,
+        settings.effects.max_zoom,
+    ))
+}
+
 /// Get recording events for Timeline UI (lightweight representation).
 pub fn get_recording_events(recording_id: &str) -> Result<Vec<crate::config::TimelineEvent>> {
     let recording_dir = dirs::video_dir()

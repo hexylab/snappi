@@ -1,6 +1,7 @@
 import { createSignal, createEffect, createMemo, onCleanup, For, Show } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ZoomKeyframe } from "../lib/types";
+import type { ZoomSegment } from "../lib/zoomSegments";
 import { computeViewportAt } from "../lib/springMath";
 
 interface Props {
@@ -8,12 +9,16 @@ interface Props {
   frameCount: number;
   durationMs: number;
   keyframes?: ZoomKeyframe[];
+  segments: ZoomSegment[];
+  selectedSegment?: ZoomSegment | null;
   seekToTimeMs?: number;
   onTimeChange?: (timeMs: number) => void;
   screenWidth?: number;
   screenHeight?: number;
   showZoomOverlay?: boolean;
   showZoomPreview?: boolean;
+  editMode?: "position" | null;
+  onVideoClick?: (screenX: number, screenY: number) => void;
 }
 
 export default function VideoPlayer(props: Props) {
@@ -22,7 +27,6 @@ export default function VideoPlayer(props: Props) {
   const [seeking, setSeeking] = createSignal(false);
   const [loaded, setLoaded] = createSignal(false);
 
-  // Float position for smooth playback (0-indexed)
   let playbackPos = 0;
   let animationRef: number | undefined;
   let lastTimestamp: number | undefined;
@@ -35,9 +39,6 @@ export default function VideoPlayer(props: Props) {
 
   const frameToPercent = (frame: number) =>
     props.frameCount > 1 ? ((frame - 1) / (props.frameCount - 1)) * 100 : 0;
-
-  const timeToPercent = (ms: number) =>
-    props.durationMs > 0 ? (ms / props.durationMs) * 100 : 0;
 
   const framePath = (frameNum: number) => {
     const padded = String(frameNum).padStart(8, "0");
@@ -54,17 +55,23 @@ export default function VideoPlayer(props: Props) {
     return `${min}:${sec.toString().padStart(2, "0")}.${frac}`;
   };
 
-  // Get current zoom target at the current time
-  const currentTarget = () => {
-    const kfs = props.keyframes;
-    if (!kfs || kfs.length === 0) return null;
+  // ズーム区間をセグメントから直接計算
+  const zoomRegions = createMemo(() =>
+    props.segments.map(seg => ({
+      startPct: props.durationMs > 0 ? (seg.startMs / props.durationMs) * 100 : 0,
+      endPct: props.durationMs > 0 ? (seg.endMs / props.durationMs) * 100 : 0,
+      zoomLevel: seg.zoomLevel,
+      id: seg.id,
+    }))
+  );
+
+  // 現在再生位置のズームレベル
+  const currentZoomLevel = () => {
     const t = currentTimeMs();
-    let current = kfs[0];
-    for (const kf of kfs) {
-      if (kf.time_ms <= t) current = kf;
-      else break;
+    for (const seg of props.segments) {
+      if (t >= seg.startMs && t <= seg.endMs) return seg.zoomLevel;
     }
-    return current;
+    return 1.0;
   };
 
   // Compute animated viewport at current time (Spring physics simulation)
@@ -84,7 +91,7 @@ export default function VideoPlayer(props: Props) {
     );
   });
 
-  // Playback loop using float accumulator
+  // Playback loop
   const tick = (timestamp: number) => {
     if (!playing()) return;
 
@@ -110,7 +117,6 @@ export default function VideoPlayer(props: Props) {
 
   createEffect(() => {
     if (playing()) {
-      // Sync playbackPos from current display frame before starting
       playbackPos = currentFrame() - 1;
       lastTimestamp = undefined;
       animationRef = requestAnimationFrame(tick);
@@ -123,13 +129,11 @@ export default function VideoPlayer(props: Props) {
     }
   });
 
-  // Notify parent of time changes
   createEffect(() => {
     const t = currentTimeMs();
     props.onTimeChange?.(t);
   });
 
-  // Seek from parent (Timeline keyframe click etc.)
   createEffect(() => {
     const seekMs = props.seekToTimeMs;
     if (seekMs !== undefined && seekMs >= 0 && !playing()) {
@@ -191,6 +195,40 @@ export default function VideoPlayer(props: Props) {
     setCurrentFrame(next);
   };
 
+  const handleVideoAreaClick = (e: MouseEvent) => {
+    if (props.editMode !== "position" || !props.onVideoClick) return;
+    if (!props.screenWidth || !props.screenHeight) return;
+
+    const container = (e.currentTarget as HTMLElement);
+    const rect = container.getBoundingClientRect();
+    const containerAspect = rect.width / rect.height;
+    const videoAspect = props.screenWidth / props.screenHeight;
+
+    let renderW: number, renderH: number, offsetX: number, offsetY: number;
+    if (containerAspect > videoAspect) {
+      renderH = rect.height;
+      renderW = renderH * videoAspect;
+      offsetX = (rect.width - renderW) / 2;
+      offsetY = 0;
+    } else {
+      renderW = rect.width;
+      renderH = renderW / videoAspect;
+      offsetX = 0;
+      offsetY = (rect.height - renderH) / 2;
+    }
+
+    const localX = e.clientX - rect.left - offsetX;
+    const localY = e.clientY - rect.top - offsetY;
+
+    if (localX < 0 || localX > renderW || localY < 0 || localY > renderH) return;
+
+    const screenX = (localX / renderW) * props.screenWidth;
+    const screenY = (localY / renderH) * props.screenHeight;
+
+    e.stopPropagation();
+    props.onVideoClick(screenX, screenY);
+  };
+
   // Preload first frame
   createEffect(() => {
     if (props.frameCount > 0) {
@@ -203,7 +241,21 @@ export default function VideoPlayer(props: Props) {
   return (
     <div class="space-y-2">
       {/* Video display area */}
-      <div class="aspect-video bg-slate-800 rounded-xl overflow-hidden border border-slate-700/50 flex items-center justify-center relative">
+      <div
+        class={`aspect-video bg-slate-800 rounded-xl overflow-hidden border border-slate-700/50 flex items-center justify-center relative ${
+          props.editMode === "position" ? "cursor-crosshair" : ""
+        }`}
+        onClick={handleVideoAreaClick}
+      >
+        {/* editMode overlay */}
+        <Show when={props.editMode === "position"}>
+          <div class="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+            <div class="bg-black/40 text-purple-300 text-sm px-4 py-2 rounded-lg backdrop-blur-sm">
+              映像をクリックしてズーム中心を設定
+            </div>
+          </div>
+        </Show>
+
         <Show
           when={loaded() && props.frameCount > 0}
           fallback={
@@ -247,31 +299,14 @@ export default function VideoPlayer(props: Props) {
             </div>
           </Show>
 
-          {/* Zoom center overlay (hidden during zoom preview) */}
-          <Show when={!props.showZoomPreview && props.showZoomOverlay && props.screenWidth && props.screenHeight && currentTarget()}>
-            {(target) => {
-              // Clamp center to the achievable range for the current zoom level
-              // (mirrors spring.rs current_viewport clamping logic)
-              const effectiveCenter = () => {
-                const sw = props.screenWidth!;
-                const sh = props.screenHeight!;
-                const zoom = Math.max(target().zoom_level, 1.0);
-                const vpW = sw / zoom;
-                const vpH = sh / zoom;
-                const minCx = vpW / 2;
-                const maxCx = sw - vpW / 2;
-                const minCy = vpH / 2;
-                const maxCy = sh - vpH / 2;
-                return {
-                  x: Math.max(minCx, Math.min(maxCx, target().target_x)),
-                  y: Math.max(minCy, Math.min(maxCy, target().target_y)),
-                };
-              };
-              const pctX = () => (effectiveCenter().x / props.screenWidth!) * 100;
-              const pctY = () => (effectiveCenter().y / props.screenHeight!) * 100;
+          {/* 選択中セグメントの中心位置を紫crosshairで表示 */}
+          <Show when={!props.showZoomPreview && props.showZoomOverlay && props.screenWidth && props.screenHeight && props.selectedSegment}>
+            {(_) => {
+              const seg = () => props.selectedSegment!;
+              const pctX = () => (seg().centerX / props.screenWidth!) * 100;
+              const pctY = () => (seg().centerY / props.screenHeight!) * 100;
               return (
                 <>
-                  {/* Crosshair */}
                   <div
                     class="absolute pointer-events-none"
                     style={{
@@ -280,30 +315,27 @@ export default function VideoPlayer(props: Props) {
                       transform: "translate(-50%, -50%)",
                     }}
                   >
-                    {/* Center ring */}
                     <div
-                      class="rounded-full border-2 border-orange-400/70"
+                      class="rounded-full border-2 border-purple-400/80"
                       style={{
                         width: "20px",
                         height: "20px",
-                        "box-shadow": "0 0 6px rgba(251,146,60,0.4)",
+                        "box-shadow": "0 0 8px rgba(168,85,247,0.5)",
                       }}
                     />
-                    {/* Crosshair lines */}
-                    <div class="absolute top-1/2 left-[-12px] w-[8px] h-px bg-orange-400/60" />
-                    <div class="absolute top-1/2 right-[-12px] w-[8px] h-px bg-orange-400/60" />
-                    <div class="absolute left-1/2 top-[-12px] h-[8px] w-px bg-orange-400/60" />
-                    <div class="absolute left-1/2 bottom-[-12px] h-[8px] w-px bg-orange-400/60" />
+                    <div class="absolute top-1/2 left-[-12px] w-[8px] h-px bg-purple-400/70" />
+                    <div class="absolute top-1/2 right-[-12px] w-[8px] h-px bg-purple-400/70" />
+                    <div class="absolute left-1/2 top-[-12px] h-[8px] w-px bg-purple-400/70" />
+                    <div class="absolute left-1/2 bottom-[-12px] h-[8px] w-px bg-purple-400/70" />
                   </div>
-                  {/* Zoom level badge */}
                   <div
-                    class="absolute pointer-events-none text-[10px] font-mono text-orange-300 bg-black/50 rounded px-1"
+                    class="absolute pointer-events-none text-[10px] font-mono rounded px-1 text-purple-300 bg-black/60"
                     style={{
                       left: `calc(${pctX()}% + 16px)`,
                       top: `calc(${pctY()}% - 8px)`,
                     }}
                   >
-                    {target().zoom_level.toFixed(1)}x
+                    {seg().zoomLevel.toFixed(1)}x
                   </div>
                 </>
               );
@@ -314,31 +346,31 @@ export default function VideoPlayer(props: Props) {
 
       {/* Controls */}
       <div class="space-y-1.5">
-        {/* Seekbar with keyframe markers */}
+        {/* Seekbar with zoom region highlights */}
         <div class="relative group">
           <div
             ref={seekBarRef}
             class="relative h-3 bg-slate-700/60 rounded-full cursor-pointer overflow-visible"
             onMouseDown={onSeekStart}
           >
+            {/* ズーム区間ハイライト */}
+            <For each={zoomRegions()}>
+              {(region) => (
+                <div
+                  class="absolute inset-y-0 rounded-full bg-purple-500/25 pointer-events-none"
+                  style={{
+                    left: `${region.startPct}%`,
+                    width: `${region.endPct - region.startPct}%`,
+                  }}
+                />
+              )}
+            </For>
+
             {/* Progress fill */}
             <div
               class="absolute inset-y-0 left-0 bg-gradient-to-r from-purple-500 to-blue-500 rounded-full"
               style={{ width: `${frameToPercent(currentFrame())}%` }}
             />
-
-            {/* Keyframe markers */}
-            <Show when={props.keyframes}>
-              <For each={props.keyframes}>
-                {(kf) => (
-                  <div
-                    class="absolute top-[-2px] w-1.5 h-[calc(100%+4px)] rounded-full bg-yellow-400/80 pointer-events-none"
-                    style={{ left: `${timeToPercent(kf.time_ms)}%` }}
-                    title={`${formatTime(kf.time_ms)} - ${kf.zoom_level.toFixed(1)}x`}
-                  />
-                )}
-              </For>
-            </Show>
 
             {/* Seek thumb */}
             <div
@@ -351,7 +383,6 @@ export default function VideoPlayer(props: Props) {
         {/* Playback controls */}
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-1">
-            {/* Step back */}
             <button
               onClick={() => stepFrame(-1)}
               class="p-1.5 rounded-md hover:bg-slate-700/60 text-slate-400 hover:text-white transition-colors"
@@ -362,7 +393,6 @@ export default function VideoPlayer(props: Props) {
               </svg>
             </button>
 
-            {/* Play/Pause */}
             <button
               onClick={togglePlay}
               class="p-2 rounded-lg bg-slate-700/60 hover:bg-slate-600 text-white transition-colors"
@@ -383,7 +413,6 @@ export default function VideoPlayer(props: Props) {
               </Show>
             </button>
 
-            {/* Step forward */}
             <button
               onClick={() => stepFrame(1)}
               class="p-1.5 rounded-md hover:bg-slate-700/60 text-slate-400 hover:text-white transition-colors"
@@ -395,12 +424,18 @@ export default function VideoPlayer(props: Props) {
             </button>
           </div>
 
-          {/* Time display */}
-          <div class="text-xs font-mono text-slate-400">
-            <span class="text-slate-200">{formatTime(currentTimeMs())}</span>
-            <span class="mx-1">/</span>
-            <span>{formatTime(props.durationMs)}</span>
-            <span class="ml-2 text-slate-600">
+          <div class="flex items-center gap-2 text-xs font-mono text-slate-400">
+            <span>
+              <span class="text-slate-200">{formatTime(currentTimeMs())}</span>
+              <span class="mx-1">/</span>
+              <span>{formatTime(props.durationMs)}</span>
+            </span>
+            <Show when={currentZoomLevel() > 1.05}>
+              <span class="text-purple-300 text-[10px]">
+                ズーム {currentZoomLevel().toFixed(1)}x
+              </span>
+            </Show>
+            <span class="text-slate-700 text-[10px]">
               F{currentFrame()}/{props.frameCount}
             </span>
           </div>

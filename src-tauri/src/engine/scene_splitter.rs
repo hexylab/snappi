@@ -499,6 +499,32 @@ pub fn apply_scene_edits(
     result
 }
 
+/// Compute activity center and zoom for a given time range.
+/// Used by frontend when merging/adding zoom segments to get correct
+/// center coordinates that cover all user activity in the range.
+pub fn compute_activity_center(
+    events: &[RecordingEvent],
+    start_ms: u64,
+    end_ms: u64,
+    screen_w: f64,
+    screen_h: f64,
+    max_zoom: f64,
+) -> (f64, f64, f64) {
+    let all_points = extract_activity_points(events);
+    let relevant: Vec<&ActivityPoint> = all_points
+        .iter()
+        .filter(|p| p.time_ms >= start_ms && p.time_ms <= end_ms)
+        .collect();
+    if relevant.is_empty() {
+        return (screen_w / 2.0, screen_h / 2.0, 1.0);
+    }
+    let bbox = compute_bbox(&relevant);
+    let zoom = calc_scene_zoom(&bbox, screen_w, screen_h, max_zoom);
+    let cx = bbox.x + bbox.width / 2.0;
+    let cy = bbox.y + bbox.height / 2.0;
+    (cx, cy, zoom)
+}
+
 #[cfg(test)]
 impl Scene {
     /// Create a Scene for testing purposes.
