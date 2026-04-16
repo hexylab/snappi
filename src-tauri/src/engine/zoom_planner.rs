@@ -317,6 +317,7 @@ mod tests {
             recording_mode: None, // Display mode
             window_title: None,
             window_initial_rect: None,
+            frame_count: None,
         }
     }
 

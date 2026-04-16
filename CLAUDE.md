@@ -94,8 +94,13 @@ SolidJS (src/lib/commands.ts)
 
 ## 主要な型定義
 
-Rust側の型は `src-tauri/src/config/mod.rs` に集約。TypeScript側のミラーは `src/lib/types.ts`。
-両者は手動同期のため、Rust側の型を変更したらTypeScript側も必ず更新する。
+Rust側の型は `src-tauri/src/config/mod.rs` に集約。TypeScript側は以下の2系統:
+- `src/lib/types.ts`: 手動同期（従来、段階的に下記へ移行予定）
+- `src/lib/generated/`: ts-rs による自動生成 (Issue #11)
+  - 再生成: `cd src-tauri && cargo test --features ts-export --lib`
+  - 対象構造体に `#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]` と
+    `#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]` を付与
+  - 通常ビルドでは ts-rs 依存は無効化されるため実行時コストゼロ
 
 `RecordingState`: `Idle | Recording | Paused | Processing`
 `ExportFormat`: `Mp4 | Gif | WebM`

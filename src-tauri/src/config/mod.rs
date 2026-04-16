@@ -2,6 +2,15 @@ pub mod defaults;
 
 use serde::{Deserialize, Serialize};
 
+// Issue #11: ts-rs 型自動生成
+//
+// `cargo test --features ts-export` を実行すると、`#[cfg_attr(feature = "ts-export", ts(export))]`
+// が付いた構造体から TypeScript 定義が `../src/lib/generated/` に出力される。
+// 通常ビルドではこの機能は無効化されるため、実行時コストはゼロ。
+//
+// 新しい型を追加する際は下の各構造体と同じパターンで `#[cfg_attr(...)]` を追加し、
+// フロントエンド側では `src/lib/generated/` から import する（移行は段階的に）。
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub recording: RecordingSettings,
@@ -29,6 +38,8 @@ pub struct RecordingSettings {
 /// Recording mode: full display or specific window
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum RecordingMode {
     Display,
     Window {
@@ -52,6 +63,8 @@ impl Default for RecordingMode {
 
 /// Info about a visible window (for window selection UI)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct WindowInfo {
     pub hwnd: isize,
     pub title: String,
@@ -261,6 +274,8 @@ pub struct OutputSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum ExportFormat {
     Mp4,
     Gif,
@@ -268,6 +283,8 @@ pub enum ExportFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum QualityPreset {
     Social,
     HighQuality,
@@ -276,6 +293,8 @@ pub enum QualityPreset {
 
 /// Metadata about a completed recording session
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct RecordingMeta {
     pub version: u32,
     pub id: String,
@@ -301,6 +320,8 @@ pub struct RecordingMeta {
 
 /// Lightweight event representation for Timeline UI visualization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct TimelineEvent {
     pub time_ms: u64,
     pub event_type: String,
@@ -396,6 +417,8 @@ pub enum RecordingEvent {
 
 /// Recording info for the frontend list
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct RecordingInfo {
     pub id: String,
     pub date: String,
@@ -409,6 +432,8 @@ pub struct RecordingInfo {
 
 /// Recording state
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum RecordingState {
     Idle,
     Recording,
@@ -418,6 +443,8 @@ pub enum RecordingState {
 
 /// Export progress
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct ExportProgress {
     pub stage: String,
     pub progress: f64,

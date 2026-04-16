@@ -71,3 +71,13 @@ version = "6"
 
 [dependencies.rayon]
 version = "1"
+
+# TypeScript 型自動生成 (Issue #11)。
+# cargo test --features ts-export でRust側の型アノテーション付き構造体から
+# bindings/ にTypeScript定義を生成する。通常ビルドには含まれない。
+[dependencies.ts-rs]
+version = "10"
+optional = true
+
+[features]
+ts-export = ["ts-rs"]
