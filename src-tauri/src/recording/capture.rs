@@ -10,6 +10,30 @@ use std::time::Instant;
 /// 正確な fps を算出できるようにするための補助データ。1行1フレーム。
 pub const FRAME_TIMESTAMPS_FILE: &str = "frame_timestamps.txt";
 
+/// 録画フレーム保存に使う JPEG 品質。画面コンテンツ（テキスト/UI）は q=92 で
+/// 視覚的に PNG とほぼ区別が付かず、1920x1080 で PNG ~3-4MB から JPEG ~300KB 程度に。
+/// 最終出力は H.264 等で再圧縮されるため中間品質はこれで十分。
+const RECORDING_JPEG_QUALITY: u8 = 92;
+
+/// 画面キャプチャしたフレームを JPEG として保存するヘルパー。
+/// JPEG は RGBA を扱えないので RGB に変換して保存する（アルファは画面キャプチャに不要）。
+fn save_frame_as_jpeg(buffer: &[u8], width: u32, height: u32, path: &std::path::Path) -> std::io::Result<()> {
+    // RGBA → RGB（4 バイトごとに α を破棄）
+    let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+    for chunk in buffer.chunks_exact(4) {
+        rgb.push(chunk[0]);
+        rgb.push(chunk[1]);
+        rgb.push(chunk[2]);
+    }
+
+    let file = std::fs::File::create(path)?;
+    let mut w = std::io::BufWriter::new(file);
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, RECORDING_JPEG_QUALITY);
+    enc.encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    Ok(())
+}
+
 /// Capture a specific window's frames using PrintWindow (with DWM content) + fallback to screen BitBlt.
 ///
 /// GetDC(hwnd) + BitBlt does NOT work for GPU-accelerated windows (Chrome, Edge, etc.)
@@ -126,16 +150,12 @@ pub fn capture_window(
                 // Window may have been closed - reuse last frame or skip
                 if let Some(ref buf) = last_buffer {
                     if last_width > 0 && last_height > 0 {
-                        if let Some(img) = image::RgbaImage::from_raw(
-                            last_width as u32, last_height as u32, buf.clone(),
-                        ) {
-                            let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
-                            let _ = img.save(&frame_path);
-                            if let Some(w) = ts_writer.as_mut() {
-                                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
-                            }
-                            frame_count += 1;
+                        let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
+                        let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
+                        if let Some(w) = ts_writer.as_mut() {
+                            let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
                         }
+                        frame_count += 1;
                     }
                 }
                 let elapsed = frame_start.elapsed();
@@ -152,16 +172,12 @@ pub fn capture_window(
                 // Window is minimized - reuse last frame
                 if let Some(ref buf) = last_buffer {
                     if last_width > 0 && last_height > 0 {
-                        if let Some(img) = image::RgbaImage::from_raw(
-                            last_width as u32, last_height as u32, buf.clone(),
-                        ) {
-                            let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
-                            let _ = img.save(&frame_path);
-                            if let Some(w) = ts_writer.as_mut() {
-                                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
-                            }
-                            frame_count += 1;
+                        let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
+                        let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
+                        if let Some(w) = ts_writer.as_mut() {
+                            let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
                         }
+                        frame_count += 1;
                     }
                 }
                 let elapsed = frame_start.elapsed();
@@ -233,13 +249,9 @@ pub fn capture_window(
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
 
-            // Save frame
-            if let Some(img) = image::RgbaImage::from_raw(
-                width as u32, height as u32, buffer.clone(),
-            ) {
-                let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
-                let _ = img.save(&frame_path);
-            }
+            // Save frame as JPEG for drastically reduced disk usage
+            let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
+            let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
             if let Some(w) = ts_writer.as_mut() {
                 let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
             }
@@ -354,12 +366,8 @@ pub fn capture_area(
                     chunk.swap(0, 2);
                 }
 
-                if let Some(img) = image::RgbaImage::from_raw(
-                    area_w as u32, area_h as u32, buffer.clone(),
-                ) {
-                    let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
-                    let _ = img.save(&frame_path);
-                }
+                let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
+                let _ = save_frame_as_jpeg(&buffer, area_w as u32, area_h as u32, &frame_path);
                 if let Some(w) = ts_writer.as_mut() {
                     let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
                 }
@@ -474,14 +482,8 @@ pub fn capture_screen(
                 }
 
                 // Save frame as PNG (for FFmpeg later)
-                if let Some(img) = image::RgbaImage::from_raw(
-                    width as u32,
-                    height as u32,
-                    buffer.clone(),
-                ) {
-                    let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
-                    let _ = img.save(&frame_path);
-                }
+                let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
+                let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
                 if let Some(w) = ts_writer.as_mut() {
                     let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
                 }
