@@ -2,6 +2,7 @@ use crate::config::{AppSettings, RecordingInfo, RecordingMeta, RecordingMode};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 pub struct RecordingSession {
     id: String,
@@ -11,6 +12,8 @@ pub struct RecordingSession {
     start_time: Arc<Mutex<Option<std::time::Instant>>>,
     fps: u32,
     recording_mode: RecordingMode,
+    /// 各キャプチャスレッドのJoinHandle。stop()時にjoinして取りこぼしを防ぐ
+    thread_handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl RecordingSession {
@@ -31,6 +34,7 @@ impl RecordingSession {
             start_time: Arc::new(Mutex::new(None)),
             fps: settings.recording.fps,
             recording_mode: settings.recording.recording_mode.clone(),
+            thread_handles: Mutex::new(Vec::new()),
         })
     }
 
@@ -43,13 +47,15 @@ impl RecordingSession {
         *self.start_time.lock().unwrap() = Some(std::time::Instant::now());
         log::info!("Recording started: {}", self.id);
 
+        let mut handles: Vec<JoinHandle<()>> = Vec::new();
+
         // Start capture thread (mode-dependent)
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
         let fps = self.fps;
         let mode = self.recording_mode.clone();
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             let result = match mode {
                 RecordingMode::Window { hwnd, .. } => {
                     super::capture::capture_window(running, paused, &dir, fps, hwnd)
@@ -64,47 +70,52 @@ impl RecordingSession {
             if let Err(e) = result {
                 log::error!("Capture error: {}", e);
             }
-        });
+        }));
 
         // Start input event collection thread
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = super::events::collect_events(running, paused, &dir) {
                 log::error!("Event collection error: {}", e);
             }
-        });
+        }));
 
         // Start audio capture thread
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = super::audio::capture_audio(running, paused, &dir) {
                 log::error!("Audio capture error: {}", e);
             }
-        });
+        }));
 
         // Start window focus tracking thread
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = super::focus::track_focus(running, paused, &dir) {
                 log::error!("Window focus tracking error: {}", e);
             }
-        });
+        }));
 
         // Start UI Automation tracker thread (best-effort, failure doesn't block recording)
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = super::ui_tracker::track_ui_events(running, paused, &dir) {
                 log::warn!("UI tracker error (non-fatal): {}", e);
             }
-        });
+        }));
+
+        // Store handles for join on stop
+        if let Ok(mut stored) = self.thread_handles.lock() {
+            *stored = handles;
+        }
 
         Ok(())
     }
@@ -113,8 +124,47 @@ impl RecordingSession {
         self.is_running.store(false, Ordering::SeqCst);
         log::info!("Recording stopped: {}", self.id);
 
-        // Wait a moment for threads to finish
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Join all capture threads to ensure buffered frames/audio are flushed.
+        // rdev (events.rs) のグローバルフックは listen() がブロッキングのため
+        // is_running を落としてもすぐには抜けない可能性がある。そこで全体に
+        // タイムアウトを設け、超過した場合は強制的に次へ進む（記録済みデータは保全される）。
+        let handles = self
+            .thread_handles
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+
+        const MAX_JOIN_WAIT_PER_THREAD_MS: u64 = 2000;
+        for (i, handle) in handles.into_iter().enumerate() {
+            // JoinHandle::join() はタイムアウト機能を持たないため、
+            // Thread::is_finished() でポーリングしつつタイムアウトを実装する。
+            let thread_name = handle.thread().name().map(|s| s.to_string());
+            let start = std::time::Instant::now();
+            let mut finished = false;
+
+            while start.elapsed() < std::time::Duration::from_millis(MAX_JOIN_WAIT_PER_THREAD_MS) {
+                if handle.is_finished() {
+                    finished = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+
+            if finished {
+                if let Err(e) = handle.join() {
+                    log::warn!("Thread #{} ({:?}) panicked during join: {:?}", i, thread_name, e);
+                }
+            } else {
+                log::warn!(
+                    "Thread #{} ({:?}) did not finish within {}ms; detaching",
+                    i, thread_name, MAX_JOIN_WAIT_PER_THREAD_MS
+                );
+                // JoinHandle を drop するとスレッドはデタッチされ、プロセス終了まで動作を続ける
+                drop(handle);
+            }
+        }
+
+        log::info!("All recording threads joined (or timed out): {}", self.id);
 
         // Write metadata
         let duration_ms = self.start_time.lock().unwrap()
