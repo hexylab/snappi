@@ -48,6 +48,9 @@ const EVENT_TYPE_CONFIG: Record<string, { color: string; lane: number; label: st
 
 const LANE_COUNT = 4;
 
+const ZOOM_LEVELS = [1, 2, 4, 8] as const;
+type ZoomLevel = typeof ZOOM_LEVELS[number];
+
 export default function Timeline(props: Props) {
   const [scenes, setScenes] = createSignal<SceneInfo[]>([]);
   const [events, setEvents] = createSignal<TimelineEvent[]>([]);
@@ -55,7 +58,10 @@ export default function Timeline(props: Props) {
   const [hoveredSceneIdx, setHoveredSceneIdx] = createSignal<number | null>(null);
   const [hoveredEventIdx, setHoveredEventIdx] = createSignal<number | null>(null);
   const [tooltipPos, setTooltipPos] = createSignal<{ x: number; y: number } | null>(null);
+  /** タイムラインの水平ズーム倍率。イベントが密集する長尺録画向け */
+  const [zoomLevel, setZoomLevel] = createSignal<ZoomLevel>(1);
   let containerRef: HTMLDivElement | undefined;
+  let scrollRef: HTMLDivElement | undefined;
 
   onMount(async () => {
     setLoading(true);
@@ -84,8 +90,10 @@ export default function Timeline(props: Props) {
 
   const visibleEvents = createMemo(() => {
     const evts = events();
+    // 少数ならそのまま表示
     if (evts.length < 500) return evts;
-    const W = 1000;
+    // ズームに応じて間引き解像度を上げる（2xズームなら 2000px 解像度で重複排除）
+    const W = 1000 * zoomLevel();
     const seen = new Set<string>();
     return evts.filter((evt) => {
       const px = Math.round(timeToX(evt.time_ms, W));
@@ -194,28 +202,75 @@ export default function Timeline(props: Props) {
 
   const TOTAL_HEIGHT = EVENT_LANE_HEIGHT + STATE_BAND_HEIGHT + SCENE_BAND_HEIGHT;
 
+  // ズーム段階を循環切り替え
+  const cycleZoom = (dir: 1 | -1) => {
+    const idx = ZOOM_LEVELS.indexOf(zoomLevel());
+    const nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx + dir));
+    setZoomLevel(ZOOM_LEVELS[nextIdx]);
+  };
+
+  // 時間軸目盛り数: ズーム倍率に応じて増やす
+  const tickCount = createMemo(() => 4 * zoomLevel());
+  const timeTicks = createMemo(() => {
+    const n = tickCount();
+    const d = props.durationMs;
+    return Array.from({ length: n + 1 }, (_, i) => Math.round((d * i) / n));
+  });
+
   return (
     <div class="space-y-1">
       <Show when={!loading()} fallback={<div class="text-xs text-slate-500">...</div>}>
-        {/* ZoomTrack: 紫ブロック表示 */}
-        <div>
-          <div class="text-[9px] text-slate-500 mb-0.5">ズーム区間（クリックで追加 / ドラッグでリサイズ）</div>
-          <ZoomTrack
-            segments={props.segments}
-            durationMs={props.durationMs}
-            currentTimeMs={props.currentTimeMs ?? 0}
-            selectedSegmentId={props.selectedSegmentId}
-            onSelectSegment={props.onSelectSegment}
-            onUpdateSegment={props.onUpdateSegment}
-            onAddSegment={props.onAddSegment}
-            onDeleteSegment={props.onDeleteSegment}
-            onMergeSegments={props.onMergeSegments}
-            onSegmentResizeEnd={props.onSegmentResizeEnd}
-          />
+        {/* ズームコントロール */}
+        <div class="flex items-center gap-1 text-[10px] text-slate-500">
+          <span>水平ズーム:</span>
+          <button
+            class="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200"
+            onClick={() => cycleZoom(-1)}
+            disabled={zoomLevel() === ZOOM_LEVELS[0]}
+            title="ズームアウト"
+          >−</button>
+          <span class="font-mono px-1 text-slate-300">{zoomLevel()}×</span>
+          <button
+            class="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200"
+            onClick={() => cycleZoom(1)}
+            disabled={zoomLevel() === ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
+            title="ズームイン"
+          >+</button>
+          <Show when={zoomLevel() !== 1}>
+            <button
+              class="ml-2 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
+              onClick={() => setZoomLevel(1)}
+              title="等倍に戻す"
+            >フィット</button>
+          </Show>
         </div>
 
-        {/* Event lane + state band + scene band */}
-        <div class="relative" style={{ height: `${TOTAL_HEIGHT + 20}px` }}>
+        {/* 水平スクロール可能なコンテナ: ZoomTrack と Timeline を同期スクロール */}
+        <div
+          ref={scrollRef}
+          class="overflow-x-auto overflow-y-hidden"
+          style={{ "scrollbar-gutter": "stable" }}
+        >
+          <div style={{ "min-width": `${100 * zoomLevel()}%`, width: `${100 * zoomLevel()}%` }}>
+            {/* ZoomTrack: 紫ブロック表示 */}
+            <div>
+              <div class="text-[9px] text-slate-500 mb-0.5">ズーム区間（クリックで追加 / ドラッグでリサイズ）</div>
+              <ZoomTrack
+                segments={props.segments}
+                durationMs={props.durationMs}
+                currentTimeMs={props.currentTimeMs ?? 0}
+                selectedSegmentId={props.selectedSegmentId}
+                onSelectSegment={props.onSelectSegment}
+                onUpdateSegment={props.onUpdateSegment}
+                onAddSegment={props.onAddSegment}
+                onDeleteSegment={props.onDeleteSegment}
+                onMergeSegments={props.onMergeSegments}
+                onSegmentResizeEnd={props.onSegmentResizeEnd}
+              />
+            </div>
+
+            {/* Event lane + state band + scene band */}
+            <div class="relative" style={{ height: `${TOTAL_HEIGHT + 20}px` }}>
           <div
             ref={containerRef}
             class="relative cursor-crosshair"
@@ -405,13 +460,13 @@ export default function Timeline(props: Props) {
             </svg>
           </div>
 
-          {/* Time labels */}
+          {/* Time labels (ズーム倍率に応じて分割数を増やす) */}
           <div class="flex justify-between text-[9px] text-slate-500 font-mono mt-0.5">
-            <span>0:00</span>
-            <span>{formatTime(Math.round(props.durationMs / 4))}</span>
-            <span>{formatTime(Math.round(props.durationMs / 2))}</span>
-            <span>{formatTime(Math.round(props.durationMs * 3 / 4))}</span>
-            <span>{formatTime(props.durationMs)}</span>
+            <For each={timeTicks()}>
+              {(ms) => <span>{formatTime(ms)}</span>}
+            </For>
+          </div>
+        </div>
           </div>
         </div>
 
