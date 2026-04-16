@@ -14,6 +14,29 @@ use std::process::Command;
 /// Progress callback: (stage, progress 0.0-1.0)
 pub type ProgressFn = Box<dyn Fn(&str, f64) + Send>;
 
+/// 中間合成フレームの JPEG 品質 (1-100)。
+/// 最終出力は H.264 等でさらに圧縮されるため、中間段階で 95 を切る必要はほぼ無い。
+/// BMP (1920x1080 で約 5.9MB) から JPEG q=95 (約 0.4MB) へ約 15 倍のディスク削減。
+const INTERMEDIATE_JPEG_QUALITY: u8 = 95;
+
+/// RGB イメージを JPEG として高品質で保存するヘルパー。
+fn save_rgb_as_jpeg(
+    img: &image::RgbImage,
+    path: &std::path::Path,
+    quality: u8,
+) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality);
+    encoder.encode(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(())
+}
+
 /// Generate export filename from recording start_time (RFC3339) as YYYYMMDD_hhmmss.
 fn export_filename(start_time: &str, format: &ExportFormat) -> String {
     let ext = match format {
@@ -574,8 +597,8 @@ fn compose_frames_with_keyframes(
 
         let composed = compositor.compose_frame(&raw_frame, frame_time_ms, cursor_pos, &click_effects, active_key, dt);
         let rgb_frame = image::DynamicImage::ImageRgba8(composed).to_rgb8();
-        let output_path = composed_frames_dir.join(format!("frame_{:08}.bmp", output_frame_count));
-        rgb_frame.save_with_format(&output_path, image::ImageFormat::Bmp)?;
+        let output_path = composed_frames_dir.join(format!("frame_{:08}.jpg", output_frame_count));
+        save_rgb_as_jpeg(&rgb_frame, &output_path, INTERMEDIATE_JPEG_QUALITY)?;
         output_frame_count += 1;
 
         if frame_idx % 10 == 0 {
@@ -828,12 +851,15 @@ fn compose_frames(
             dt,
         );
 
-        // Save composed frame as BMP (faster than PNG for temp files)
-        // Use sequential output counter to avoid gaps in FFmpeg sequence
-        // Convert RGBA→RGB to avoid alpha channel issues with FFmpeg
+        // 合成済みフレームを JPEG q=95 で保存。
+        // BMP 時代と比較してディスク使用量を約 15 倍削減できる。
+        // 最終出力は H.264/VP9 等で再エンコードされるため、
+        // 中間段階で q=95 以上の品質はほぼ無意味。
+        // シーケンス番号にギャップを作らないため output_frame_count を使う。
+        // RGBA→RGB で JPEG のアルファ非対応にも対応。
         let rgb_frame = image::DynamicImage::ImageRgba8(composed).to_rgb8();
-        let output_path = composed_frames_dir.join(format!("frame_{:08}.bmp", output_frame_count));
-        rgb_frame.save_with_format(&output_path, image::ImageFormat::Bmp)?;
+        let output_path = composed_frames_dir.join(format!("frame_{:08}.jpg", output_frame_count));
+        save_rgb_as_jpeg(&rgb_frame, &output_path, INTERMEDIATE_JPEG_QUALITY)?;
         output_frame_count += 1;
 
         if frame_idx % 10 == 0 {
@@ -1134,7 +1160,7 @@ fn encode_mp4(
         .args(["-i"])
         .arg(
             frames_dir
-                .join("frame_%08d.bmp")
+                .join("frame_%08d.jpg")
                 .to_string_lossy()
                 .to_string(),
         );
@@ -1193,7 +1219,7 @@ fn encode_gif(
         .args(["-i"])
         .arg(
             frames_dir
-                .join("frame_%08d.bmp")
+                .join("frame_%08d.jpg")
                 .to_string_lossy()
                 .to_string(),
         )
@@ -1209,7 +1235,7 @@ fn encode_gif(
         .args(["-i"])
         .arg(
             frames_dir
-                .join("frame_%08d.bmp")
+                .join("frame_%08d.jpg")
                 .to_string_lossy()
                 .to_string(),
         )
@@ -1244,7 +1270,7 @@ fn encode_webm(
         .args(["-i"])
         .arg(
             frames_dir
-                .join("frame_%08d.bmp")
+                .join("frame_%08d.jpg")
                 .to_string_lossy()
                 .to_string(),
         );
