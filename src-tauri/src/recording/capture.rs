@@ -1,7 +1,14 @@
 use anyhow::Result;
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
+
+/// 各フレーム保存時の「録画開始からの実経過 ms」を記録するファイル名。
+/// 長時間録画で capture スレッドのジッタが蓄積した場合でも、エクスポート時に
+/// 正確な fps を算出できるようにするための補助データ。1行1フレーム。
+pub const FRAME_TIMESTAMPS_FILE: &str = "frame_timestamps.txt";
 
 /// Capture a specific window's frames using PrintWindow (with DWM content) + fallback to screen BitBlt.
 ///
@@ -33,6 +40,11 @@ pub fn capture_window(
 
     let frame_interval = std::time::Duration::from_nanos(1_000_000_000 / fps as u64);
     let mut frame_count: u64 = 0;
+
+    // 録画開始時刻。各フレーム保存時の経過 ms を frame_timestamps.txt に記録する。
+    let session_start = Instant::now();
+    let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
+    let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
 
     unsafe {
         let hwnd = HWND(hwnd_raw as *mut _);
@@ -119,6 +131,9 @@ pub fn capture_window(
                         ) {
                             let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
                             let _ = img.save(&frame_path);
+                            if let Some(w) = ts_writer.as_mut() {
+                                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                            }
                             frame_count += 1;
                         }
                     }
@@ -142,6 +157,9 @@ pub fn capture_window(
                         ) {
                             let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
                             let _ = img.save(&frame_path);
+                            if let Some(w) = ts_writer.as_mut() {
+                                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                            }
                             frame_count += 1;
                         }
                     }
@@ -222,6 +240,9 @@ pub fn capture_window(
                 let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
                 let _ = img.save(&frame_path);
             }
+            if let Some(w) = ts_writer.as_mut() {
+                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+            }
 
             last_buffer = Some(buffer);
             frame_count += 1;
@@ -234,6 +255,10 @@ pub fn capture_window(
 
         // Release the screen DC
         ReleaseDC(HWND::default(), screen_dc);
+    }
+
+    if let Some(mut w) = ts_writer {
+        let _ = w.flush();
     }
 
     log::info!("Window capture stopped. Total frames: {}", frame_count);
@@ -275,6 +300,11 @@ pub fn capture_area(
     // Save dimensions
     let dims = format!("{}x{}", area_w, area_h);
     std::fs::write(output_dir.join("dimensions.txt"), &dims)?;
+
+    // 録画開始時刻。各フレームの実経過 ms を記録
+    let session_start = Instant::now();
+    let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
+    let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
 
     #[cfg(windows)]
     {
@@ -330,6 +360,9 @@ pub fn capture_area(
                     let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
                     let _ = img.save(&frame_path);
                 }
+                if let Some(w) = ts_writer.as_mut() {
+                    let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                }
 
                 frame_count += 1;
 
@@ -344,6 +377,10 @@ pub fn capture_area(
             let _ = DeleteDC(mem_dc);
             let _ = ReleaseDC(HWND::default(), screen_dc);
         }
+    }
+
+    if let Some(mut w) = ts_writer {
+        let _ = w.flush();
     }
 
     log::info!("Area capture stopped. Total frames: {}", frame_count);
@@ -367,6 +404,11 @@ pub fn capture_screen(
 
     let frame_interval = std::time::Duration::from_nanos(1_000_000_000 / fps as u64);
     let mut frame_count: u64 = 0;
+
+    // 録画開始時刻。各フレームの実経過 ms を記録
+    let session_start = Instant::now();
+    let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
+    let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
 
     #[cfg(windows)]
     {
@@ -440,6 +482,9 @@ pub fn capture_screen(
                     let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_count));
                     let _ = img.save(&frame_path);
                 }
+                if let Some(w) = ts_writer.as_mut() {
+                    let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                }
 
                 frame_count += 1;
 
@@ -456,6 +501,10 @@ pub fn capture_screen(
             let _ = DeleteDC(mem_dc);
             let _ = ReleaseDC(HWND::default(), screen_dc);
         }
+    }
+
+    if let Some(mut w) = ts_writer {
+        let _ = w.flush();
     }
 
     log::info!("Screen capture stopped. Total frames: {}", frame_count);

@@ -471,10 +471,30 @@ fn compose_frames_with_keyframes(
         return Err(anyhow::anyhow!("No frames found in recording"));
     }
 
-    let actual_fps = if meta.duration_ms > 0 && frame_count > 1 {
-        (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-    } else {
-        meta.fps as f64
+    // frame_timestamps.txt があれば「最初〜最後のフレーム間の実経過時間」で
+    // 平均 fps を算出する（末尾 sleep 分のバイアスを除外）。
+    // 無い場合は従来通り meta.duration_ms ベースにフォールバック。
+    let actual_fps = {
+        let ts = read_frame_timestamps(&recording_dir);
+        match ts {
+            Some(ref v) if v.len() >= 2 => {
+                let span_ms = v.last().copied().unwrap_or(0).saturating_sub(v.first().copied().unwrap_or(0));
+                if span_ms > 0 {
+                    ((v.len() as f64 - 1.0) * 1000.0) / span_ms as f64
+                } else if meta.duration_ms > 0 && frame_count > 1 {
+                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
+                } else {
+                    meta.fps as f64
+                }
+            }
+            _ => {
+                if meta.duration_ms > 0 && frame_count > 1 {
+                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
+                } else {
+                    meta.fps as f64
+                }
+            }
+        }
     };
     let frame_time_step_ms = if frame_count > 1 && meta.duration_ms > 0 {
         meta.duration_ms / frame_count
@@ -605,10 +625,30 @@ fn compose_frames(
     // Calculate actual recording framerate from real data
     // Events use real-time timestamps (ms from recording start),
     // so frame timing must match the actual recording duration
-    let actual_fps = if meta.duration_ms > 0 && frame_count > 1 {
-        (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-    } else {
-        meta.fps as f64
+    // frame_timestamps.txt があれば「最初〜最後のフレーム間の実経過時間」で
+    // 平均 fps を算出する（末尾 sleep 分のバイアスを除外）。
+    // 無い場合は従来通り meta.duration_ms ベースにフォールバック。
+    let actual_fps = {
+        let ts = read_frame_timestamps(&recording_dir);
+        match ts {
+            Some(ref v) if v.len() >= 2 => {
+                let span_ms = v.last().copied().unwrap_or(0).saturating_sub(v.first().copied().unwrap_or(0));
+                if span_ms > 0 {
+                    ((v.len() as f64 - 1.0) * 1000.0) / span_ms as f64
+                } else if meta.duration_ms > 0 && frame_count > 1 {
+                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
+                } else {
+                    meta.fps as f64
+                }
+            }
+            _ => {
+                if meta.duration_ms > 0 && frame_count > 1 {
+                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
+                } else {
+                    meta.fps as f64
+                }
+            }
+        }
     };
     let frame_time_step_ms = if frame_count > 1 && meta.duration_ms > 0 {
         meta.duration_ms / frame_count
@@ -918,6 +958,26 @@ fn find_cursor_at_time(positions: &[(u64, f64, f64)], time_ms: u64) -> Option<(f
             Some((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
         }
     }
+}
+
+/// capture 側が保存した frame_timestamps.txt を読み込み、録画開始からの各フレームの
+/// 経過 ms を返す。ファイルが無い・行が壊れている場合は None。
+///
+/// 返り値を使うことで「(frame_count - 1) * 1000 / 最終タイムスタンプ」として
+/// 実キャプチャ fps を算出でき、meta.duration_ms の末尾sleepバイアスを回避できる。
+fn read_frame_timestamps(recording_dir: &std::path::Path) -> Option<Vec<u64>> {
+    let path = recording_dir.join("frame_timestamps.txt");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut out = Vec::with_capacity(1024);
+    for line in content.lines() {
+        let s = line.trim();
+        if s.is_empty() { continue; }
+        match s.parse::<u64>() {
+            Ok(v) => out.push(v),
+            Err(_) => return None,
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn read_frame_count(recording_dir: &std::path::Path) -> u64 {
