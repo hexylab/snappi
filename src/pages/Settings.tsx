@@ -111,6 +111,14 @@ export default function Settings(props: Props) {
                 <SettingRow label="マイク" desc="マイク入力を録音します。ナレーション付き動画に便利です">
                   <input type="checkbox" checked={s().recording.capture_microphone} onChange={(e) => updateField("recording", "capture_microphone", e.target.checked)} class="rounded" />
                 </SettingRow>
+                <SettingRow label="キー入力の詳細を記録" desc="OFF（既定）ではカテゴリのみ記録。ONにするとパスワード等も平文で録画ディレクトリに残るので注意">
+                  <input
+                    type="checkbox"
+                    checked={s().recording.record_key_labels ?? false}
+                    onChange={(e) => updateField("recording", "record_key_labels", e.target.checked)}
+                    class="rounded"
+                  />
+                </SettingRow>
                 <SettingRow label="録画モード" desc="画面全体・特定ウィンドウ・指定範囲から選べます">
                   <select
                     value={s().recording.recording_mode.type}
