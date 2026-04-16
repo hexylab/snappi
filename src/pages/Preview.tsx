@@ -154,19 +154,29 @@ export default function Preview(props: Props) {
   };
 
   // リサイズ終了時にBBox再計算 → center/zoomを更新
+  // ただしユーザーが手動で値を変更したフィールド（manualCenter/manualZoomフラグ）は保持する
   const handleSegmentResizeEnd = async (id: number) => {
     const seg = segments().find(s => s.id === id);
     if (!seg || !props.recordingId) return;
+
+    // 両方とも手動編集済みなら再計算自体を行わない
+    if (seg.manualCenter && seg.manualZoom) return;
+
     try {
       const result = await computeActivityCenter(
         props.recordingId, Math.round(seg.startMs), Math.round(seg.endMs),
       );
-      const updates: Partial<ZoomSegment> = {
-        centerX: result.center_x,
-        centerY: result.center_y,
-        zoomLevel: Math.max(result.zoom_level, 1.0),
-      };
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+      const updates: Partial<ZoomSegment> = {};
+      if (!seg.manualCenter) {
+        updates.centerX = result.center_x;
+        updates.centerY = result.center_y;
+      }
+      if (!seg.manualZoom) {
+        updates.zoomLevel = Math.max(result.zoom_level, 1.0);
+      }
+      if (Object.keys(updates).length > 0) {
+        setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+      }
     } catch (e) { console.error("compute_activity_center failed (resize):", e); }
   };
 
@@ -241,19 +251,28 @@ export default function Preview(props: Props) {
     const startMs = Math.min(s1.startMs, s2.startMs);
     const endMs = Math.max(s1.endMs, s2.endMs);
 
-    let centerX = (s1.centerX + s2.centerX) / 2;
-    let centerY = (s1.centerY + s2.centerY) / 2;
-    let zoomLevel = Math.min(s1.zoomLevel, s2.zoomLevel);
+    // どちらかが手動編集されている場合はその値を優先（統合時に上書きしない）
+    const manualCenter = s1.manualCenter || s2.manualCenter;
+    const manualZoom = s1.manualZoom || s2.manualZoom;
 
-    // Rust側でBBox再計算 → 正しいcenter/zoom取得
-    if (props.recordingId) {
+    // 手動編集された側の値を優先、なければ平均/最小
+    let centerX = s1.manualCenter ? s1.centerX : s2.manualCenter ? s2.centerX : (s1.centerX + s2.centerX) / 2;
+    let centerY = s1.manualCenter ? s1.centerY : s2.manualCenter ? s2.centerY : (s1.centerY + s2.centerY) / 2;
+    let zoomLevel = s1.manualZoom ? s1.zoomLevel : s2.manualZoom ? s2.zoomLevel : Math.min(s1.zoomLevel, s2.zoomLevel);
+
+    // 両方が自動の項目のみRust側でBBox再計算
+    if (props.recordingId && (!manualCenter || !manualZoom)) {
       try {
         const result = await computeActivityCenter(
           props.recordingId, Math.round(startMs), Math.round(endMs),
         );
-        centerX = result.center_x;
-        centerY = result.center_y;
-        zoomLevel = Math.max(result.zoom_level, 1.0);
+        if (!manualCenter) {
+          centerX = result.center_x;
+          centerY = result.center_y;
+        }
+        if (!manualZoom) {
+          zoomLevel = Math.max(result.zoom_level, 1.0);
+        }
       } catch (e) { console.error("compute_activity_center failed (merge):", e); }
     }
 
@@ -264,6 +283,8 @@ export default function Preview(props: Props) {
       zoomLevel,
       centerX,
       centerY,
+      manualCenter,
+      manualZoom,
     };
     setSegments(prev =>
       prev.filter(s => s.id !== id1 && s.id !== id2).concat(merged).sort((a, b) => a.startMs - b.startMs)
@@ -273,7 +294,8 @@ export default function Preview(props: Props) {
   const handleVideoClick = (screenX: number, screenY: number) => {
     const id = selectedSegmentId();
     if (id === null) return;
-    updateSegment(id, { centerX: screenX, centerY: screenY });
+    // 中心位置を手動設定したのでフラグを立てる
+    updateSegment(id, { centerX: screenX, centerY: screenY, manualCenter: true });
     setEditMode(null);
   };
 
