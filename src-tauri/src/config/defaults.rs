@@ -21,6 +21,7 @@ impl Default for RecordingSettings {
             capture_microphone: false,
             max_duration_seconds: 300, // 5 minutes
             recording_mode: RecordingMode::Display,
+            record_key_labels: false,
         }
     }
 }
