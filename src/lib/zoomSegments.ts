@@ -7,6 +7,10 @@ export interface ZoomSegment {
   zoomLevel: number;
   centerX: number;
   centerY: number;
+  /** ユーザーが centerX/centerY を手動で変更したか。true の場合、リサイズ等の自動再計算で上書きしない */
+  manualCenter?: boolean;
+  /** ユーザーが zoomLevel を手動で変更したか。true の場合、リサイズ等の自動再計算で上書きしない */
+  manualZoom?: boolean;
 }
 
 export const ZOOM_THRESHOLD = 1.05;
