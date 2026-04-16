@@ -174,6 +174,9 @@ impl RecordingSession {
         // Read actual screen dimensions from capture thread output
         let (screen_width, screen_height) = self.read_dimensions();
 
+        // Read frame count from capture thread output
+        let frame_count = self.read_frame_count();
+
         // Check if audio was actually captured (file exists and has data beyond WAV header)
         let audio_path = self.recording_dir.join("audio.wav");
         let has_audio = audio_path.exists()
@@ -203,11 +206,18 @@ impl RecordingSession {
             recording_mode: mode_str,
             window_title: win_title,
             window_initial_rect: win_rect,
+            frame_count: Some(frame_count),
         };
 
         let meta_path = self.recording_dir.join("meta.json");
         let meta_json = serde_json::to_string_pretty(&meta)?;
         std::fs::write(meta_path, meta_json)?;
+
+        // meta.json への統合が完了したので、冗長な中間ファイルを削除する。
+        // 互換性: 読み込み側は meta.frame_count が None のとき frame_count.txt に
+        // フォールバックするため、旧録画は従来通り動作する。
+        let _ = std::fs::remove_file(self.recording_dir.join("dimensions.txt"));
+        let _ = std::fs::remove_file(self.recording_dir.join("frame_count.txt"));
 
         Ok(())
     }
@@ -224,6 +234,14 @@ impl RecordingSession {
         }
         // Fallback to default
         (1920, 1080)
+    }
+
+    fn read_frame_count(&self) -> u32 {
+        let fc_path = self.recording_dir.join("frame_count.txt");
+        std::fs::read_to_string(&fc_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0)
     }
 
     pub fn pause(&self) -> Result<()> {
@@ -256,11 +274,14 @@ pub fn list_recordings() -> Result<Vec<RecordingInfo>> {
             if meta_path.exists() {
                 let content = std::fs::read_to_string(&meta_path)?;
                 if let Ok(meta) = serde_json::from_str::<RecordingMeta>(&content) {
-                    let fc_path = entry.path().join("frame_count.txt");
-                    let frame_count = std::fs::read_to_string(&fc_path)
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        .unwrap_or(0);
+                    // meta.frame_count を優先。旧録画 (None) は frame_count.txt にフォールバック。
+                    let frame_count = meta.frame_count.unwrap_or_else(|| {
+                        let fc_path = entry.path().join("frame_count.txt");
+                        std::fs::read_to_string(&fc_path)
+                            .ok()
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0)
+                    });
                     let thumb_path = entry.path().join("thumbnail.png");
                     let thumbnail_path = if thumb_path.exists() {
                         Some(thumb_path.to_string_lossy().to_string())
