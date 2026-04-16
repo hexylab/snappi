@@ -36,6 +36,60 @@ pub fn capture_window(
 
     unsafe {
         let hwnd = HWND(hwnd_raw as *mut _);
+
+        // HWND identity を検証するための情報を録画開始時に取得。
+        // Windows は閉じられたウィンドウの HWND 値を再利用するため、
+        // 毎フレームこれらと照合して別ウィンドウを撮影してしまうのを防ぐ。
+        let initial_pid: u32 = {
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            pid
+        };
+        let initial_title: String = {
+            let mut buf = [0u16; 512];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            if n > 0 {
+                String::from_utf16_lossy(&buf[..n as usize])
+            } else {
+                String::new()
+            }
+        };
+        log::info!(
+            "Window identity captured: pid={}, title={:?}",
+            initial_pid,
+            initial_title
+        );
+
+        // HWND identity を確認する。再利用検出時に一度だけ警告を出したいので
+        // 連続エラーの抑止フラグも持つ。
+        let mut identity_warned = false;
+        let verify_identity = |identity_warned: &mut bool| -> bool {
+            if !IsWindow(hwnd).as_bool() {
+                if !*identity_warned {
+                    log::warn!("Target window handle is no longer valid (IsWindow=false)");
+                    *identity_warned = true;
+                }
+                return false;
+            }
+
+            if initial_pid != 0 {
+                let mut pid: u32 = 0;
+                let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid != initial_pid {
+                    if !*identity_warned {
+                        log::warn!(
+                            "HWND has been recycled by another process (expected pid={}, got={})",
+                            initial_pid, pid
+                        );
+                        *identity_warned = true;
+                    }
+                    return false;
+                }
+            }
+
+            true
+        };
+
         let mut last_buffer: Option<Vec<u8>> = None;
         let mut last_width: i32 = 0;
         let mut last_height: i32 = 0;
@@ -51,9 +105,12 @@ pub fn capture_window(
                 continue;
             }
 
+            // Verify the HWND still refers to our original window before touching the rect.
+            let identity_ok = verify_identity(&mut identity_warned);
+
             // Get current window rect
             let mut rect = RECT::default();
-            if GetWindowRect(hwnd, &mut rect).is_err() {
+            if !identity_ok || GetWindowRect(hwnd, &mut rect).is_err() {
                 // Window may have been closed - reuse last frame or skip
                 if let Some(ref buf) = last_buffer {
                     if last_width > 0 && last_height > 0 {
