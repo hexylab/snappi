@@ -85,6 +85,7 @@ export default function SegmentEditor(props: Props) {
           onInput={(e) =>
             props.onChange(props.segment.id, {
               zoomLevel: parseFloat(e.currentTarget.value),
+              manualZoom: true,
             })
           }
           class="w-full h-1.5 bg-zinc-700 rounded-full appearance-none cursor-pointer accent-purple-500"
@@ -116,6 +117,32 @@ export default function SegmentEditor(props: Props) {
             : "映像をクリックして設定"}
         </button>
       </div>
+
+      {/* 手動編集フラグ表示 + リセット */}
+      <Show when={props.segment.manualCenter || props.segment.manualZoom}>
+        <div class="mb-2 flex items-center gap-2 px-2 py-1 rounded bg-amber-900/20 border border-amber-700/40 text-[10px]">
+          <span class="text-amber-300">
+            手動編集済み
+            {props.segment.manualCenter && props.segment.manualZoom
+              ? "（中心・倍率）"
+              : props.segment.manualCenter
+              ? "（中心位置）"
+              : "（倍率）"}
+          </span>
+          <button
+            class="ml-auto px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
+            onClick={() =>
+              props.onChange(props.segment.id, {
+                manualCenter: false,
+                manualZoom: false,
+              })
+            }
+            title="自動再計算を有効に戻す（次回リサイズ時に再計算される）"
+          >
+            自動に戻す
+          </button>
+        </div>
+      </Show>
 
       {/* フッター: 削除 + カウンター */}
       <div class="flex items-center justify-between border-t border-zinc-700 pt-2">
