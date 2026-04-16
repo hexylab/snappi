@@ -103,6 +103,8 @@ export interface AppSettings {
     capture_microphone: boolean;
     max_duration_seconds: number;
     recording_mode: RecordingMode;
+    /** キー入力ラベルを events.jsonl に平文で記録するか（既定: false） */
+    record_key_labels?: boolean;
   };
   style: {
     background: BackgroundConfig;

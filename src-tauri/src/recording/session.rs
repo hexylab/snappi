@@ -12,6 +12,8 @@ pub struct RecordingSession {
     start_time: Arc<Mutex<Option<std::time::Instant>>>,
     fps: u32,
     recording_mode: RecordingMode,
+    /// キー入力のラベルを平文で events.jsonl に記録するか（既定: false）。
+    record_key_labels: bool,
     /// 各キャプチャスレッドのJoinHandle。stop()時にjoinして取りこぼしを防ぐ
     thread_handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -34,6 +36,7 @@ impl RecordingSession {
             start_time: Arc::new(Mutex::new(None)),
             fps: settings.recording.fps,
             recording_mode: settings.recording.recording_mode.clone(),
+            record_key_labels: settings.recording.record_key_labels,
             thread_handles: Mutex::new(Vec::new()),
         })
     }
@@ -76,8 +79,9 @@ impl RecordingSession {
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
+        let rec_keys = self.record_key_labels;
         handles.push(std::thread::spawn(move || {
-            if let Err(e) = super::events::collect_events(running, paused, &dir) {
+            if let Err(e) = super::events::collect_events(running, paused, &dir, rec_keys) {
                 log::error!("Event collection error: {}", e);
             }
         }));

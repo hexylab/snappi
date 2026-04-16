@@ -19,6 +19,11 @@ pub struct RecordingSettings {
     pub max_duration_seconds: u64,
     #[serde(default)]
     pub recording_mode: RecordingMode,
+    /// キー入力のラベル（"a", "Return" など）を events.jsonl に平文で記録するか。
+    /// false（既定）の場合はカテゴリのみ（"Character", "Modifier", "Navigation" など）を
+    /// 記録し、パスワードやチャット内容などが録画ディレクトリに残らないようにする。
+    #[serde(default)]
+    pub record_key_labels: bool,
 }
 
 /// Recording mode: full display or specific window

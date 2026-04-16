@@ -57,6 +57,10 @@ mod win_hooks {
         pub last_click_time: AtomicU64,
         /// クリック重複排除用: 直前のクリックボタン名
         pub last_click_btn: std::sync::Mutex<String>,
+        /// true の場合、キー押下を具体的なラベル（"a", "Return" 等）で記録する。
+        /// false の場合はカテゴリ（"Character", "Navigation" 等）のみを記録し、
+        /// パスワードやチャット内容などが録画ディレクトリに残るのを防ぐ。
+        pub record_key_labels: bool,
     }
 
     pub fn set_state(state: Arc<HookSharedState>) {
@@ -213,7 +217,12 @@ mod win_hooks {
                         if let Some(flag) = vk_to_modifier(vk) {
                             state.modifier_state.fetch_or(flag, Ordering::SeqCst);
                         } else {
-                            let key_name = vk_to_name(vk);
+                            // 設定に応じて具体ラベル or カテゴリのみを記録
+                            let key_name = if state.record_key_labels {
+                                vk_to_name(vk)
+                            } else {
+                                vk_to_category(vk)
+                            };
                             let flags = state.modifier_state.load(Ordering::SeqCst);
                             let modifiers = modifiers_from_flags(flags);
                             if let Ok(mut buf) = state.events.lock() {
@@ -244,6 +253,31 @@ mod win_hooks {
             0x12 | 0xA4 | 0xA5 => Some(MOD_ALT),      // VK_MENU / VK_LMENU / VK_RMENU
             0x5B | 0x5C => Some(MOD_META),             // VK_LWIN / VK_RWIN
             _ => None,
+        }
+    }
+
+    /// プライバシー配慮モードで使用: 具体的な文字ではなくカテゴリのみを返す。
+    /// タイムライン上で「キー入力があった」というタイミング情報は残しつつ、
+    /// 実際に打たれた文字（パスワード等）は記録しない。
+    fn vk_to_category(vk: u32) -> String {
+        match vk {
+            0x08 => "Backspace".into(),
+            0x09 => "Tab".into(),
+            0x0D => "Return".into(),
+            0x1B => "Escape".into(),
+            0x20 => "Space".into(),
+            0x21 | 0x22 | 0x23 | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 => "Navigation".into(),
+            0x2C => "PrintScreen".into(),
+            0x2D => "Insert".into(),
+            0x2E => "Delete".into(),
+            0x30..=0x39 => "Digit".into(),
+            0x41..=0x5A => "Character".into(),
+            0x60..=0x69 => "NumDigit".into(),
+            0x6A..=0x6F => "NumOperator".into(),
+            0x70..=0x87 => "FunctionKey".into(),
+            0x90 | 0x91 | 0x14 => "Lock".into(),
+            0xBA..=0xDE => "Symbol".into(),
+            _ => "Other".into(),
         }
     }
 
@@ -298,11 +332,15 @@ pub fn collect_events(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
+    record_key_labels: bool,
 ) -> Result<()> {
     let events_path = output_dir.join("events.jsonl");
     let mut file = std::fs::File::create(&events_path)?;
 
-    log::info!("Event collection thread started");
+    log::info!(
+        "Event collection thread started (record_key_labels={})",
+        record_key_labels
+    );
 
     #[cfg(windows)]
     {
@@ -320,6 +358,7 @@ pub fn collect_events(
             is_paused: is_paused.clone(),
             last_click_time: AtomicU64::new(u64::MAX),
             last_click_btn: std::sync::Mutex::new(String::new()),
+            record_key_labels,
         });
 
         // グローバル状態にセット（フックコールバックからアクセス用）
@@ -419,6 +458,7 @@ pub fn collect_events(
     #[cfg(not(windows))]
     {
         // Windows以外ではイベント収集なし
+        let _ = record_key_labels; // avoid unused variable warning
         while is_running.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
