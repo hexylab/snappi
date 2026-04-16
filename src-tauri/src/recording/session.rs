@@ -10,6 +10,10 @@ pub struct RecordingSession {
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 一時停止中に蓄積した時間（ms）。実効録画時間の算出用。
+    pause_accumulated_ms: Arc<Mutex<u64>>,
+    /// 現在一時停止中ならその開始時刻。resume() で accumulated に足し込む。
+    pause_start: Arc<Mutex<Option<std::time::Instant>>>,
     fps: u32,
     recording_mode: RecordingMode,
     /// キー入力のラベルを平文で events.jsonl に記録するか（既定: false）。
@@ -34,6 +38,8 @@ impl RecordingSession {
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
+            pause_accumulated_ms: Arc::new(Mutex::new(0)),
+            pause_start: Arc::new(Mutex::new(None)),
             fps: settings.recording.fps,
             recording_mode: settings.recording.recording_mode.clone(),
             record_key_labels: settings.recording.record_key_labels,
@@ -171,9 +177,11 @@ impl RecordingSession {
         log::info!("All recording threads joined (or timed out): {}", self.id);
 
         // Write metadata
-        let duration_ms = self.start_time.lock().unwrap()
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        // duration_ms は「実効録画時間」（一時停止時間を除いた時間）。
+        // これを使うことで、エクスポート時のフレームレート算出
+        // (frame_count * 1000 / duration_ms) が実際のキャプチャ fps と一致し、
+        // 長時間録画でも音声/映像/イベントのタイムスタンプがずれない。
+        let duration_ms = self.effective_duration_ms();
 
         // Read actual screen dimensions from capture thread output
         let (screen_width, screen_height) = self.read_dimensions();
@@ -249,13 +257,43 @@ impl RecordingSession {
     }
 
     pub fn pause(&self) -> Result<()> {
-        self.is_paused.store(true, Ordering::SeqCst);
+        // 既に pause 済みなら二重計上を避けるために Instant は上書きしない
+        if !self.is_paused.swap(true, Ordering::SeqCst) {
+            if let Ok(mut p) = self.pause_start.lock() {
+                *p = Some(std::time::Instant::now());
+            }
+        }
         Ok(())
     }
 
     pub fn resume(&self) -> Result<()> {
-        self.is_paused.store(false, Ordering::SeqCst);
+        if self.is_paused.swap(false, Ordering::SeqCst) {
+            if let Ok(mut p) = self.pause_start.lock() {
+                if let Some(start) = p.take() {
+                    let delta = start.elapsed().as_millis() as u64;
+                    if let Ok(mut acc) = self.pause_accumulated_ms.lock() {
+                        *acc += delta;
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// start() からの経過時間のうち、一時停止していない実効録画時間（ms）を返す。
+    /// stop() 時に呼ぶとき、まだ pause 中であれば現在時点までの pause 時間も差し引く。
+    fn effective_duration_ms(&self) -> u64 {
+        let elapsed_ms = self.start_time.lock().unwrap()
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        let mut paused_ms = self.pause_accumulated_ms.lock().map(|g| *g).unwrap_or(0);
+        // まだ pause 中なら未確定の pause 時間も反映
+        if let Ok(guard) = self.pause_start.lock() {
+            if let Some(start) = *guard {
+                paused_ms += start.elapsed().as_millis() as u64;
+            }
+        }
+        elapsed_ms.saturating_sub(paused_ms)
     }
 }
 
