@@ -921,6 +921,16 @@ fn find_cursor_at_time(positions: &[(u64, f64, f64)], time_ms: u64) -> Option<(f
 }
 
 fn read_frame_count(recording_dir: &std::path::Path) -> u64 {
+    // meta.json に統合された frame_count を優先的に読む。
+    // 旧録画 (frame_count フィールドなし) では frame_count.txt にフォールバックする。
+    let meta_path = recording_dir.join("meta.json");
+    if let Ok(content) = std::fs::read_to_string(&meta_path) {
+        if let Ok(meta) = serde_json::from_str::<crate::config::RecordingMeta>(&content) {
+            if let Some(fc) = meta.frame_count {
+                return fc as u64;
+            }
+        }
+    }
     let frame_count_path = recording_dir.join("frame_count.txt");
     std::fs::read_to_string(&frame_count_path)
         .ok()

@@ -288,6 +288,10 @@ pub struct RecordingMeta {
     pub window_title: Option<String>,
     #[serde(default)]
     pub window_initial_rect: Option<[f64; 4]>,
+    /// 録画されたフレーム数。旧バージョンでは frame_count.txt に保存されていた。
+    /// None の場合、リスト表示は frame_count.txt にフォールバックする。
+    #[serde(default)]
+    pub frame_count: Option<u32>,
 }
 
 /// Lightweight event representation for Timeline UI visualization.
