@@ -586,7 +586,7 @@ fn compose_frames_with_keyframes(
             kf_index += 1;
         }
 
-        let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_idx));
+        let frame_path = recording_frame_path(&frames_dir, frame_idx);
         let raw_frame = match image::open(&frame_path) {
             Ok(img) => img.to_rgba8(),
             Err(_) => continue,
@@ -826,7 +826,7 @@ fn compose_frames(
         }
 
         // Load raw frame
-        let frame_path = frames_dir.join(format!("frame_{:08}.png", frame_idx));
+        let frame_path = recording_frame_path(&frames_dir, frame_idx);
         let raw_frame = match image::open(&frame_path) {
             Ok(img) => img.to_rgba8(),
             Err(_) => {
@@ -986,6 +986,21 @@ fn find_cursor_at_time(positions: &[(u64, f64, f64)], time_ms: u64) -> Option<(f
     }
 }
 
+/// 録画フレームのパスを解決する。新しい録画は `.jpg`、旧録画は `.png` で保存されている
+/// ため両方をチェックする。ファイルが見つからない場合は `.jpg` のパスを返す（呼び出し側が
+/// エラーを出す想定）。
+pub fn recording_frame_path(frames_dir: &std::path::Path, idx: u64) -> std::path::PathBuf {
+    let jpg = frames_dir.join(format!("frame_{:08}.jpg", idx));
+    if jpg.exists() {
+        return jpg;
+    }
+    let png = frames_dir.join(format!("frame_{:08}.png", idx));
+    if png.exists() {
+        return png;
+    }
+    jpg
+}
+
 /// capture 側が保存した frame_timestamps.txt を読み込み、録画開始からの各フレームの
 /// 経過 ms を返す。ファイルが無い・行が壊れている場合は None。
 ///
@@ -1037,12 +1052,13 @@ pub fn generate_thumbnail(recording_id: &str) -> Result<String> {
     let frame_count = read_frame_count(&recording_dir).max(1);
     let target_frame = (frame_count as f64 * 0.3) as u64;
 
-    // Try target frame, then fallback to frame 0
-    let frame_path = frames_dir.join(format!("frame_{:08}.png", target_frame));
-    let frame_path = if frame_path.exists() {
-        frame_path
+    // Try target frame, then fallback to frame 0. recording_frame_path が .jpg/.png を
+    // 解決するので、旧録画（PNG 保存）と新録画（JPEG 保存）の両方に対応する。
+    let target_path = recording_frame_path(&frames_dir, target_frame);
+    let frame_path = if target_path.exists() {
+        target_path
     } else {
-        let fallback = frames_dir.join("frame_00000000.png");
+        let fallback = recording_frame_path(&frames_dir, 0);
         if !fallback.exists() {
             return Err(anyhow::anyhow!("No frames found for thumbnail"));
         }

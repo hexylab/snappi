@@ -110,8 +110,9 @@ pub fn detect_frame_changes(
     let results: Vec<Option<ChangeRegion>> = pairs
         .par_iter()
         .map(|(idx_a, idx_b)| {
-            let path_a = frames_dir.join(format!("frame_{:08}.png", idx_a));
-            let path_b = frames_dir.join(format!("frame_{:08}.png", idx_b));
+            // 新録画は .jpg、旧録画は .png で保存されるため両方をチェック
+            let path_a = crate::export::encoder::recording_frame_path(frames_dir, *idx_a);
+            let path_b = crate::export::encoder::recording_frame_path(frames_dir, *idx_b);
 
             let img_a = load_downsampled_gray(&path_a, ds).ok()?;
             let img_b = load_downsampled_gray(&path_b, ds).ok()?;
