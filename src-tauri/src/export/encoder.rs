@@ -164,6 +164,15 @@ pub fn generate_keyframes_for_recording(
         }
     }
 
+    // Phase A (Issue #23): ui_events.jsonl の矩形情報を各シーンに付与。
+    // scene.ui_rect が立ったシーンは zoom_planner で矩形ベースのズーム計算に切り替わる。
+    crate::engine::ui_context::attach_ui_rects_to_scenes(
+        &mut scenes,
+        &raw_events,
+        meta.screen_width as f64,
+        meta.screen_height as f64,
+    );
+
     let keyframes = if settings.effects.auto_zoom_enabled {
         generate_zoom_plan(&scenes, &meta, &settings.effects, &change_regions)
     } else {
@@ -317,6 +326,14 @@ pub fn apply_scene_edits_for_recording(
             settings.effects.max_zoom,
         );
     }
+
+    // Phase A (Issue #23): edited_scenes にも UI 矩形を紐付け
+    crate::engine::ui_context::attach_ui_rects_to_scenes(
+        &mut edited_scenes,
+        &events,
+        meta.screen_width as f64,
+        meta.screen_height as f64,
+    );
 
     // Regenerate keyframes from edited scenes
     let keyframes = if settings.effects.auto_zoom_enabled {
@@ -730,6 +747,14 @@ fn compose_frames(
         }
     }
 
+    // Phase A (Issue #23): ui_events.jsonl の矩形を各シーンに紐付け
+    crate::engine::ui_context::attach_ui_rects_to_scenes(
+        &mut scenes,
+        &events,
+        meta.screen_width as f64,
+        meta.screen_height as f64,
+    );
+
     let zoom_keyframes = if settings.effects.auto_zoom_enabled {
         generate_zoom_plan(&scenes, meta, &settings.effects, &change_regions)
     } else {
@@ -896,6 +921,24 @@ fn load_events(recording_dir: &std::path::Path) -> Result<Vec<RecordingEvent>> {
                     events.push(event);
                 }
             }
+        }
+    }
+
+    // Phase A (Issue #23): UI Automation 由来の矩形イベントも取り込む。
+    // これを `attach_ui_rects_to_scenes` に渡して各シーンに ui_rect を付与する。
+    let ui_events_path = recording_dir.join("ui_events.jsonl");
+    if ui_events_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&ui_events_path) {
+            let mut ui_count: usize = 0;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
+                    events.push(event);
+                    ui_count += 1;
+                }
+            }
+            log::info!("Loaded {} UI events from ui_events.jsonl", ui_count);
         }
     }
 
