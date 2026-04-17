@@ -21,9 +21,10 @@ interface Props {
   onSegmentResizeEnd?: (id: number) => void;
 }
 
-const EVENT_LANE_HEIGHT = 32;
-const STATE_BAND_HEIGHT = 18;
-const SCENE_BAND_HEIGHT = 12;
+// 動画エディタ風に高めのレーン（編集しやすさ優先）
+const EVENT_LANE_HEIGHT = 48;
+const STATE_BAND_HEIGHT = 24;
+const SCENE_BAND_HEIGHT = 18;
 
 const EVENT_LANE_Y = 0;
 const STATE_BAND_Y = EVENT_LANE_HEIGHT;

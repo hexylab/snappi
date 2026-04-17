@@ -167,7 +167,8 @@ export default function ZoomTrack(props: Props) {
   }
 
   return (
-    <div class="relative w-full select-none" style={{ height: "28px" }}>
+    // 動画編集ソフト風に高めのトラック（以前の28pxだとハンドルを掴みにくかった）
+    <div class="relative w-full select-none" style={{ height: "44px" }}>
       {/* トラック背景 */}
       <div
         ref={trackRef}
@@ -204,15 +205,15 @@ export default function ZoomTrack(props: Props) {
                   </span>
                 </Show>
 
-                {/* 左リサイズハンドル */}
+                {/* 左リサイズハンドル（掴みやすくするため 10px 幅） */}
                 <div
-                  class="absolute left-0 top-0 bottom-0 w-[6px] cursor-ew-resize z-10 hover:bg-purple-400/40"
+                  class="absolute left-0 top-0 bottom-0 w-[10px] cursor-ew-resize z-10 hover:bg-purple-400/60 border-l-2 border-purple-300/70"
                   onMouseDown={(e) => startDrag(e, seg.id, "start")}
                 />
 
-                {/* 右リサイズハンドル */}
+                {/* 右リサイズハンドル（掴みやすくするため 10px 幅） */}
                 <div
-                  class="absolute right-0 top-0 bottom-0 w-[6px] cursor-ew-resize z-10 hover:bg-purple-400/40"
+                  class="absolute right-0 top-0 bottom-0 w-[10px] cursor-ew-resize z-10 hover:bg-purple-400/60 border-r-2 border-purple-300/70"
                   onMouseDown={(e) => startDrag(e, seg.id, "end")}
                 />
               </div>

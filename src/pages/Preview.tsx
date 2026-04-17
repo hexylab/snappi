@@ -319,10 +319,13 @@ export default function Preview(props: Props) {
         </button>
       </header>
 
-      {/* メインコンテンツ */}
+      {/* メインコンテンツ: 動画エディタ風レイアウト
+          - Video Player: 中央寄せで max-w-7xl（視聴体験のため大きすぎない）
+          - Timeline: ウィンドウ幅いっぱいに広げて編集しやすく */}
       <div class="flex-1 overflow-y-auto">
-        <div class="px-6 pt-4 pb-3 space-y-3 max-w-4xl mx-auto w-full">
-          {/* Video Player */}
+        <div class="pt-4 pb-3 space-y-3 w-full">
+          {/* Video Player: 中央寄せエリア */}
+          <div class="px-6 max-w-7xl mx-auto w-full">
           <Show
             when={recordingInfo()}
             fallback={
@@ -357,10 +360,11 @@ export default function Preview(props: Props) {
               />
             )}
           </Show>
+          </div>{/* /Video Player 中央寄せエリア */}
 
-          {/* Timeline section */}
+          {/* Timeline section: ウィンドウ幅いっぱいで編集しやすく（動画エディタ風） */}
           <Show when={recordingInfo() && recordingInfo()!.duration_ms > 0}>
-            <div class="border border-slate-700/50 rounded-lg overflow-hidden">
+            <div class="mx-2 border border-slate-700/50 rounded-lg overflow-hidden">
               {/* Header with toggle */}
               <div class="flex items-center justify-between px-4 py-2 bg-slate-800/50">
                 <button
@@ -443,9 +447,9 @@ export default function Preview(props: Props) {
         </div>
       </div>
 
-      {/* 固定フッター: エクスポート + アクション */}
+      {/* 固定フッター: エクスポート + アクション（ウィンドウ幅いっぱい） */}
       <footer class="flex-shrink-0 border-t border-slate-700/50 bg-slate-900/95 backdrop-blur-sm px-6 py-3">
-        <div class="max-w-4xl mx-auto space-y-2">
+        <div class="max-w-7xl mx-auto space-y-2">
           <div class="flex items-center gap-3">
             <select
               value={quality()}
