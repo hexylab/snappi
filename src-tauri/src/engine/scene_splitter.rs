@@ -42,6 +42,12 @@ pub struct Scene {
     pub center_y: f64,
     pub zoom_level: f64,
     pub event_count: usize,
+    /// UI Automation で取得した、このシーンの主要 UI 要素の矩形。
+    /// 設定されている場合、zoom_planner はこの矩形をベースにズーム中心/倍率を決める
+    /// （テキストボックスやボタンの矩形全体が画面に収まるようなフレーミング）。
+    /// UI 情報が取れないアプリ（ゲーム等）では None → 従来の bbox ベースにフォールバック。
+    #[serde(default)]
+    pub ui_rect: Option<Rect>,
 }
 
 /// A manual scene editing operation from the Timeline UI.
@@ -177,6 +183,7 @@ pub(crate) fn make_scene(
         center_y,
         zoom_level,
         event_count: points.len(),
+        ui_rect: None,
     }
 }
 
@@ -451,6 +458,7 @@ pub fn apply_scene_edits(
                                 zoom_level: calc_scene_zoom(&bbox, screen_w, screen_h, max_zoom),
                                 event_count: a.event_count + b.event_count,
                                 bbox,
+                                ui_rect: None,
                             };
                             result.splice(i..=i + 1, std::iter::once(merged));
                         } else {
@@ -551,6 +559,7 @@ impl Scene {
             center_y: cy,
             zoom_level,
             event_count: 3,
+            ui_rect: None,
         }
     }
 }
