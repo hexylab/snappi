@@ -40,10 +40,12 @@ export default function VideoPlayer(props: Props) {
   const frameToPercent = (frame: number) =>
     props.frameCount > 1 ? ((frame - 1) / (props.frameCount - 1)) * 100 : 0;
 
-  const framePath = (frameNum: number) => {
+  // 新録画は .jpg（PR #21）、旧録画は .png。
+  // img タグの onError で自動フォールバックさせるため、framePath は拡張子ごとの関数として提供する。
+  const framePath = (frameNum: number, ext: "jpg" | "png" = "jpg") => {
     const padded = String(frameNum).padStart(8, "0");
     return convertFileSrc(
-      `${props.recordingDir}\\frames\\frame_${padded}.png`
+      `${props.recordingDir}\\frames\\frame_${padded}.${ext}`
     );
   };
 
@@ -229,12 +231,18 @@ export default function VideoPlayer(props: Props) {
     props.onVideoClick(screenX, screenY);
   };
 
-  // Preload first frame
+  // Preload first frame. 新録画は .jpg、旧録画は .png なのでどちらか成功したら loaded にする
   createEffect(() => {
     if (props.frameCount > 0) {
       const img = new Image();
       img.onload = () => setLoaded(true);
-      img.src = framePath(1);
+      img.onerror = () => {
+        // .jpg で失敗したら .png にフォールバック
+        const fb = new Image();
+        fb.onload = () => setLoaded(true);
+        fb.src = framePath(1, "png");
+      };
+      img.src = framePath(1, "jpg");
     }
   });
 
@@ -278,7 +286,13 @@ export default function VideoPlayer(props: Props) {
           }
         >
           <img
-            src={framePath(currentFrame())}
+            src={framePath(currentFrame(), "jpg")}
+            onError={(e) => {
+              // .jpg が無い = 旧 PNG 録画 → .png にフォールバック
+              const el = e.currentTarget;
+              const pngUrl = framePath(currentFrame(), "png");
+              if (el.src !== pngUrl) el.src = pngUrl;
+            }}
             alt={`Frame ${currentFrame()}`}
             class="w-full h-full object-contain"
             draggable={false}
