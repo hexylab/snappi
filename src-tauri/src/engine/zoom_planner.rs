@@ -9,9 +9,9 @@
 //! zoom-out only occurs when there are no events AND no screen changes.
 
 use crate::config::{EffectsSettings, RecordingMeta};
+use crate::engine::analyzer::Rect;
 use crate::engine::frame_differ::ChangeRegion;
 use crate::engine::scene_splitter::{calc_window_zoom, Scene};
-use crate::engine::analyzer::Rect;
 use serde::{Deserialize, Serialize};
 
 // ------------------------------------------------------------------
@@ -62,6 +62,83 @@ mod half_lives {
 const ANTICIPATION_HALF_LIVES: f64 = 4.0;
 /// Minimum gap between keyframes to avoid jitter.
 const MIN_KEYFRAME_INTERVAL_MS: u64 = 800;
+
+/// UI 矩形からズーム枠を作るときの余白比率（Phase A: Issue #23）。
+/// テキストボックスやボタンの矩形ちょうどにズームすると窮屈なので、
+/// 矩形を `1 + UI_RECT_PADDING` 倍に拡張してからフレーミングする。
+const UI_RECT_PADDING: f64 = 0.18;
+
+/// 矩形ベースのズーム計算結果（Phase A）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RectZoomTarget {
+    pub center_x: f64,
+    pub center_y: f64,
+    pub zoom_level: f64,
+}
+
+/// UI 要素の矩形から「その矩形全体が画面に余白付きで収まる」ようなズーム中心と倍率を計算する。
+///
+/// - `rect`: UI 要素の絶対座標（画面座標系）
+/// - `screen_w` / `screen_h`: キャプチャ画面の幅・高さ
+/// - `max_zoom`: これ以上は拡大しない上限
+/// - `padding`: 矩形周りに確保する余白比率（0.15 なら 15%）
+///
+/// 返り値の `zoom_level` は常に 1.0 以上 max_zoom 以下。矩形が無効（ゼロサイズ等）
+/// の場合は overview 相当の値を返す。
+pub fn zoom_target_from_rect(
+    rect: &Rect,
+    screen_w: f64,
+    screen_h: f64,
+    max_zoom: f64,
+    padding: f64,
+) -> RectZoomTarget {
+    let center_x = rect.x + rect.width / 2.0;
+    let center_y = rect.y + rect.height / 2.0;
+
+    if rect.width <= 0.0 || rect.height <= 0.0 || screen_w <= 0.0 || screen_h <= 0.0 {
+        return RectZoomTarget {
+            center_x,
+            center_y,
+            zoom_level: 1.0,
+        };
+    }
+
+    let padded_w = rect.width * (1.0 + padding).max(1.0);
+    let padded_h = rect.height * (1.0 + padding).max(1.0);
+
+    // 矩形を画面にフィットさせるズーム倍率（幅・高さの両方を満たす最小値）
+    let fit_w = screen_w / padded_w;
+    let fit_h = screen_h / padded_h;
+    let fit_zoom = fit_w.min(fit_h);
+
+    // 1.0 未満にはしない（全体より広くズームアウトはしない）、max_zoom を超えない
+    let zoom_level = fit_zoom.clamp(1.0, max_zoom.max(1.0));
+
+    RectZoomTarget {
+        center_x,
+        center_y,
+        zoom_level,
+    }
+}
+
+/// シーンのズーム対象を決定する。`ui_rect` があればそれを優先し、無ければ
+/// シーンの既存 bbox/center/zoom_level を使う。
+fn resolve_scene_target(scene: &Scene, screen_w: f64, screen_h: f64, max_zoom: f64) -> RectZoomTarget {
+    if let Some(rect) = &scene.ui_rect {
+        let candidate = zoom_target_from_rect(rect, screen_w, screen_h, max_zoom, UI_RECT_PADDING);
+        // ui_rect ベースのズーム倍率が既存 scene.zoom_level より小さい場合、
+        // 既存の bbox がより広い注目領域を示唆していると見なして ui_rect 側を採用。
+        // ui_rect を採用した方が常に「要素にフィット」という直感的な挙動になる。
+        return candidate;
+    }
+
+    // フォールバック: 従来通りの点/bbox ベース
+    RectZoomTarget {
+        center_x: scene.center_x,
+        center_y: scene.center_y,
+        zoom_level: scene.zoom_level,
+    }
+}
 
 // ------------------------------------------------------------------
 // Public API
@@ -185,18 +262,22 @@ pub fn generate_zoom_plan(
             anticipated.max(earliest).max(min_after_last)
         };
 
+        // Phase A (Issue #23): UI 要素の矩形があればそれをズーム対象に採用。
+        // 無ければ従来の bbox/center/zoom_level にフォールバック。
+        let target = resolve_scene_target(scene, screen_w, screen_h, settings.max_zoom);
+
         // Windowモード: WorkAreaのzoomがOverview以下になるようクランプ
         // （ウィンドウ全体表示より拡大しない。パンのみで追従）
         let clamped_zoom = if is_window_mode {
-            scene.zoom_level.min(overview_zoom)
+            target.zoom_level.min(overview_zoom)
         } else {
-            scene.zoom_level
+            target.zoom_level
         };
 
         plan.push(ZoomKeyframe {
             time_ms: kf_time,
-            target_x: scene.center_x,
-            target_y: scene.center_y,
+            target_x: target.center_x,
+            target_y: target.center_y,
             zoom_level: clamped_zoom,
             transition,
             spring_hint: Some(SpringHint {
@@ -302,6 +383,61 @@ mod tests {
     use super::*;
     use crate::config::{AnimationSpeed, ZoomIntensity};
 
+    #[test]
+    fn test_zoom_target_from_rect_fits_small_button() {
+        // 100x40 のボタンを 1920x1080 画面でフレーミング
+        let rect = Rect { x: 500.0, y: 500.0, width: 100.0, height: 40.0 };
+        let target = zoom_target_from_rect(&rect, 1920.0, 1080.0, 5.0, 0.2);
+        // 中心は rect の中央
+        assert!((target.center_x - 550.0).abs() < 0.01);
+        assert!((target.center_y - 520.0).abs() < 0.01);
+        // 小さい rect → ズーム率上限（max_zoom=5.0）にクランプされる
+        assert!((target.zoom_level - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_zoom_target_from_rect_wide_element_limited_by_width() {
+        // 画面幅の半分を占めるテキストボックス
+        let rect = Rect { x: 100.0, y: 500.0, width: 960.0, height: 60.0 };
+        let target = zoom_target_from_rect(&rect, 1920.0, 1080.0, 5.0, 0.2);
+        // 幅フィット: 1920 / (960 * 1.2) = 1.667
+        assert!((target.zoom_level - (1920.0 / (960.0 * 1.2))).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_zoom_target_from_rect_never_below_one() {
+        // 画面より大きい rect（理論上ズームアウト方向）→ 1.0 にクランプ
+        let rect = Rect { x: 0.0, y: 0.0, width: 3840.0, height: 2160.0 };
+        let target = zoom_target_from_rect(&rect, 1920.0, 1080.0, 5.0, 0.2);
+        assert!((target.zoom_level - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_resolve_scene_target_prefers_ui_rect() {
+        let mut scene = Scene {
+            id: 0,
+            start_ms: 0,
+            end_ms: 1000,
+            bbox: Rect { x: 0.0, y: 0.0, width: 200.0, height: 200.0 },
+            center_x: 100.0,
+            center_y: 100.0,
+            zoom_level: 2.5,
+            event_count: 1,
+            ui_rect: None,
+        };
+        // ui_rect 未設定 → scene のデフォルトが使われる
+        let t = resolve_scene_target(&scene, 1920.0, 1080.0, 5.0);
+        assert!((t.center_x - 100.0).abs() < 0.01);
+        assert!((t.zoom_level - 2.5).abs() < 0.01);
+
+        // ui_rect 設定 → rect ベースで再計算
+        scene.ui_rect = Some(Rect { x: 500.0, y: 500.0, width: 400.0, height: 60.0 });
+        let t = resolve_scene_target(&scene, 1920.0, 1080.0, 5.0);
+        // 中心は rect center
+        assert!((t.center_x - 700.0).abs() < 0.01);
+        assert!((t.center_y - 530.0).abs() < 0.01);
+    }
+
     fn test_meta() -> RecordingMeta {
         RecordingMeta {
             version: 2,
@@ -349,6 +485,43 @@ mod tests {
     fn test_empty_scenes_no_keyframes() {
         let plan = generate_zoom_plan(&[], &test_meta(), &test_settings(), &[]);
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn test_scene_with_ui_rect_uses_rect_center() {
+        // Phase A: シーンに ui_rect が設定されている場合、KF のターゲットは
+        // rect 中心になるはず（従来の scene.center_x/y ではなく）
+        let mut scenes = vec![Scene::for_test(0, 500, 3000, 100.0, 100.0, 2.0)];
+        scenes[0].ui_rect = Some(Rect {
+            x: 800.0,
+            y: 400.0,
+            width: 300.0,
+            height: 80.0,
+        });
+
+        let plan = generate_zoom_plan(&scenes, &test_meta(), &test_settings(), &[]);
+
+        // 最初は Overview (t=0, center 960x540)
+        assert_eq!(plan[0].time_ms, 0);
+        // シーン KF を探す（overview 後に出てくる）
+        let scene_kf = plan.iter().skip(1).find(|kf| kf.zoom_level > 1.1)
+            .expect("should have a zoom-in keyframe");
+        // rect center = (800+150, 400+40) = (950, 440)
+        assert!((scene_kf.target_x - 950.0).abs() < 0.5,
+            "expected rect center x=950, got {}", scene_kf.target_x);
+        assert!((scene_kf.target_y - 440.0).abs() < 0.5,
+            "expected rect center y=440, got {}", scene_kf.target_y);
+    }
+
+    #[test]
+    fn test_scene_without_ui_rect_falls_back_to_scene_center() {
+        // ui_rect 未設定なら従来通り scene.center_x/y が使われる
+        let scenes = vec![Scene::for_test(0, 500, 3000, 400.0, 250.0, 2.0)];
+        let plan = generate_zoom_plan(&scenes, &test_meta(), &test_settings(), &[]);
+        let scene_kf = plan.iter().skip(1).find(|kf| kf.zoom_level > 1.1)
+            .expect("should have a zoom-in keyframe");
+        assert!((scene_kf.target_x - 400.0).abs() < 0.5);
+        assert!((scene_kf.target_y - 250.0).abs() < 0.5);
     }
 
     #[test]
