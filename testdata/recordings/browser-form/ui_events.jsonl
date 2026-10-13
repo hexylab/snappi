@@ -1,4 +1,7 @@
-{"type": "ui_focus", "t": 2196, "control": "Edit", "name": "field0", "rect": [650, 282, 950, 318]}
-{"type": "ui_focus", "t": 5271, "control": "Edit", "name": "field1", "rect": [650, 382, 950, 418]}
-{"type": "ui_focus", "t": 8279, "control": "Edit", "name": "field2", "rect": [650, 482, 950, 518]}
-{"type": "ui_focus", "t": 11320, "control": "Edit", "name": "field3", "rect": [650, 582, 950, 618]}
+{"type":"ui_focus","t":104,"control":"Pane","name":"","rect":[471,215,1635,972],"automation_id":""}
+{"type":"ui_focus","t":209,"control":"Document","name":"フォームテストページ | サンプルサイト","rect":[471,215,1635,972],"automation_id":"RootWebArea"}
+{"type":"ui_focus","t":783,"control":"Edit","name":"1行テキスト","rect":[570,457,1141,486],"automation_id":"d6d7caa2-45b7-4b0e-b270-b3e9fe91573f"}
+{"type":"ui_focus","t":4307,"control":"Edit","name":"補足事項","rect":[570,575,1141,604],"automation_id":"7c5051a2-d6fe-4d2c-8550-04e8fda704ea"}
+{"type":"ui_focus","t":8448,"control":"Edit","name":"このブロックのみスタイル変更","rect":[570,260,1141,289],"automation_id":"84060e46-f058-41c2-b685-7a82f28e6f83"}
+{"type":"ui_focus","t":14135,"control":"Button","name":"送信する","rect":[570,599,679,637],"automation_id":""}
+{"type":"ui_focus","t":14290,"control":"Group","name":"以下の2個の問題が見つかりました。 補足事項: メール アドレスに「@」を挿入してください。「かきくけこ」内に「@」がありません。 補足事項（スクロールつき）: このフィールドを入力してください。","rect":[570,424,1521,541],"automation_id":"error-container"}

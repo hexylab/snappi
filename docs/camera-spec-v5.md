@@ -102,7 +102,7 @@ v1〜v4 のカメラエンジンは毎回書き換えられてきたが、「何
 | `idle-gaps` | 操作 → 10秒放置 → 操作 |
 | `window-mode` | ウィンドウモードでの録画（録画中にウィンドウを移動） |
 
-> **現状**: 現在のデータは `testdata/gen_synthetic.py` で生成した**合成データ**（`expect.json` に `"synthetic": true`）。Windows 実機で録画したデータに順次置き換える。録画する操作と取り込み手順は `testdata/recordings/README.md` を参照（`testdata/import_recording.py` が `frames/` と `audio.wav` を除いてコピーし、`expect.json` の下書きを作る）。
+> **現状**: `window-mode` 以外は Windows 実機の録画。`window-mode` は `testdata/gen_synthetic.py` で生成した**合成データ**（`expect.json` に `"synthetic": true`）で、実録画に置き換える。録画する操作と取り込み手順は `testdata/recordings/README.md` を参照（`testdata/import_recording.py` が `frames/` と `audio.wav` を除いてコピーし、`expect.json` の下書きを作る）。
 
 ### 7.1 expect.json
 
@@ -158,23 +158,25 @@ cargo run -q --bin snappi-eval -- ../testdata/recordings --table
 
 ## 9. ベースライン（旧エンジン v4）
 
-旧エンジン（`export::encoder::legacy_camera_track`、既定設定）の合成データでの値。新エンジンはこれを下回らないこと。
+旧エンジン（`export::encoder::legacy_camera_track`、既定設定）の値。新エンジンはこれを下回らないこと。
+`window-mode` 以外は Windows 実機の録画（2026-10-13）、`window-mode` は合成データ（実録画は未取得）。
+再計測は `cargo run -q --bin snappi-eval -- ../testdata/recordings --table`。
 
 | シナリオ | M1 | M2 | M3 | M4 (ms) | M5 | M6 | M7 | expect.json |
 |---|---|---|---|---|---|---|---|---|
-| `browser-form` | 100.00% | 100.00% | 2.0 | 17100 | 0.15 | 0 | 100.00% | **3/4** ✗ |
-| `drag-scroll` | 100.00% | 100.00% | 2.0 | 16600 | 0.15 | 0 | 100.00% | 3/3 |
-| `far-jumps` | **84.11%** ✗ | 100.00% | 2.0 | 15166 | 1.96 | 0 | 100.00% | 7/7 |
-| `idle-gaps` | 98.38% | 100.00% | 4.0 | 5333 | 0.53 | 0 | 100.00% | 5/5 |
-| `menu-navigation` | **95.91%** ✗ | 100.00% | 2.0 | 11466 | 1.03 | 0 | 100.00% | **2/3** ✗ |
-| `terminal` | - | - | 0.0 | - | 0.00 | 0 | **0.00%** ✗ | **2/3** ✗ |
-| `vscode-typing` | **97.95%** ✗ | 100.00% | 2.0 | 8200 | 0.39 | 0 | 100.00% | 4/4 |
-| `window-mode` | 100.00% | 100.00% | 2.0 | 12933 | 0.70 | 0 | 100.00% | 3/3 |
+| `browser-form` | 98.48% | 100.00% | 1.0 | 17566 | 0.14 | 0 | 100.00% | 5/5 |
+| `drag-scroll` | **92.10%** ✗ | 100.00% | 1.0 | 26567 | 1.21 | 0 | 100.00% | 9/9 |
+| `far-jumps` | **59.83%** ✗ | **83.33%** ✗ | 1.0 | 15267 | 2.11 | 0 | 100.00% | **6/7** ✗ |
+| `idle-gaps` | 99.43% | 100.00% | 3.0 | 5300 | 0.63 | 0 | 100.00% | 7/7 |
+| `menu-navigation` | 100.00% | 100.00% | 1.0 | 18300 | 0.38 | 0 | 100.00% | **9/10** ✗ |
+| `terminal` | - | - | 0.0 | - | 0.00 | 0 | **0.00%** ✗ | **1/2** ✗ |
+| `vscode-typing` | 100.00% | - | 3.0 | **1734** ✗ | 0.74 | 0 | **0.00%** ✗ | **0/3** ✗ |
+| `window-mode`（合成） | 100.00% | 100.00% | 2.0 | 12933 | 0.70 | 0 | 100.00% | 3/3 |
 
 （✗ は基準未達。frames を含まない状態での値。旧エンジンは frames があると画面差分も使うため、frames の有無で値が変わる）
 
 旧エンジンの主な問題:
-- **M1**: 遠いクリックの間（`far-jumps`）やメニュー操作（`menu-navigation`）、入力後のカーソル移動（`vscode-typing`）で、寄ったままカーソルがビューポートの外に出る。
-- **M7 / terminal**: クリックの無いキー入力だけでは寄らない（R1 違反）。
-- **expect（zoomed_out）**: 最後の操作から引くまでが長く、操作後も寄ったままの時間がある（`browser-form`, `menu-navigation`）。
-- 合成データはカーソルの動きが単純なため、実録画では値が悪化する可能性が高い。実録画に置き換えたら再計測すること。
+- **M1 / M2**: 遠いクリック（`far-jumps`）で寄ったままカーソルとクリック位置がビューポートの外に出る。ドラッグとスクロール（`drag-scroll`）でも外れる。
+- **M7 / terminal / vscode-typing**: クリックの無いキー入力だけでは寄らない（R1 違反）。`vscode-typing` は最初のクリックが録画開始 1 秒以内（R5 で無視）のため、入力だけのシナリオとして評価される。
+- **M4**: 寄る区間が 2 秒未満で終わることがある（`vscode-typing`）。
+- **expect（zoomed_out）**: アクティビティの間が 3 秒以上空いても寄ったまま（`menu-navigation`）。R5 で無視すべき冒頭のクリックに反応して寄る（`vscode-typing`）。

@@ -1,17 +1,11 @@
 {
   "description": "クリックせずにターミナルでコマンドを入力する",
-  "synthetic": true,
   "checks": [
     {
       "kind": "zoomed_in",
-      "from_ms": 3000,
-      "to_ms": 10000,
+      "from_ms": 1704,
+      "to_ms": 5654,
       "min_ratio": 0.9
-    },
-    {
-      "kind": "zoomed_out",
-      "from_ms": 14500,
-      "to_ms": 16000
     },
     {
       "kind": "max_switches",

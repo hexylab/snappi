@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "id": "synthetic-drag-scroll",
+  "id": "0b34612f-26e1-494b-94d5-464a0b2280a0",
   "screen_width": 1920,
   "screen_height": 1080,
-  "fps": 30,
-  "start_time": "2026-10-13T12:00:00+09:00",
-  "duration_ms": 24000,
+  "fps": 60,
+  "start_time": "2026-10-13T22:00:21.005377100+09:00",
+  "duration_ms": 27507,
   "has_audio": false,
   "monitor_scale": 1.0,
   "recording_dir": "",
   "recording_mode": "display",
   "window_title": null,
   "window_initial_rect": null,
-  "frame_count": 720
+  "frame_count": 49
 }

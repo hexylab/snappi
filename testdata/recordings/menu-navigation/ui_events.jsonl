@@ -1,4 +1,7 @@
-{"type": "ui_menu_open", "t": 2246, "control": "Menu", "name": "File", "rect": [0, 30, 300, 400]}
-{"type": "ui_menu_close", "t": 3622, "control": "Menu", "name": "File"}
-{"type": "ui_dialog_open", "t": 3892, "control": "Window", "name": "Save As", "rect": [560, 240, 1360, 840]}
-{"type": "ui_dialog_close", "t": 8478, "control": "Window", "name": "Save As"}
+{"type":"ui_focus","t":103,"control":"Document","name":"テキスト エディター","rect":[598,164,1381,899],"automation_id":""}
+{"type":"ui_menu_open","t":4239,"control":"Menu","name":"","rect":[602,163,834,603]}
+{"type":"ui_menu_open","t":4374,"control":"MenuItem","name":"新しいタブ","rect":[607,168,829,197]}
+{"type":"ui_focus","t":8145,"control":"Pane","name":"デスクトップ 1","rect":[0,0,1920,1080],"automation_id":""}
+{"type":"ui_focus","t":8646,"control":"Edit","name":"ファイル名:","rect":[734,478,1525,495],"automation_id":"1001"}
+{"type":"ui_focus","t":19508,"control":"Window","name":"名前を付けて保存","rect":[598,89,1558,629],"automation_id":""}
+{"type":"ui_focus","t":19608,"control":"Document","name":"テキスト エディター","rect":[598,164,1381,899],"automation_id":""}

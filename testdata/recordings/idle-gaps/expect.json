@@ -1,28 +1,41 @@
 {
   "description": "操作 → 10秒放置 → 操作。放置中は全体表示に戻る",
-  "synthetic": true,
   "checks": [
     {
+      "kind": "visible",
+      "t_ms": 3111,
+      "x": 1357.0,
+      "y": 270.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 20028,
+      "x": 786.0,
+      "y": 928.0
+    },
+    {
       "kind": "zoomed_in",
-      "from_ms": 2500,
-      "to_ms": 6080,
+      "from_ms": 3111,
+      "to_ms": 6827,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 20028,
+      "to_ms": 23943,
       "min_ratio": 0.9
     },
     {
       "kind": "zoomed_out",
-      "from_ms": 9580,
-      "to_ms": 14580
-    },
-    {
-      "kind": "zoomed_in",
-      "from_ms": 17276,
-      "to_ms": 20728,
-      "min_ratio": 0.9
+      "from_ms": 0,
+      "to_ms": 2011,
+      "min_ratio": 1.0
     },
     {
       "kind": "zoomed_out",
-      "from_ms": 24728,
-      "to_ms": 28000
+      "from_ms": 9527,
+      "to_ms": 18928,
+      "min_ratio": 1.0
     },
     {
       "kind": "max_switches",

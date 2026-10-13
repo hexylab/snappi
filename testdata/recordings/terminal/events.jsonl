@@ -1,49 +1,8 @@
-{"type": "key", "t": 150, "key": "Character", "modifiers": ["Ctrl", "Shift"]}
-{"type": "key", "t": 2000, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2124, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2250, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2429, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2615, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2747, "key": "Space", "modifiers": []}
-{"type": "key", "t": 2885, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3011, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3180, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3343, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3479, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3616, "key": "Space", "modifiers": []}
-{"type": "key", "t": 3744, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3904, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4034, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4160, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4347, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4481, "key": "Space", "modifiers": []}
-{"type": "key", "t": 4616, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4729, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4891, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5031, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5149, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5271, "key": "Space", "modifiers": []}
-{"type": "key", "t": 5434, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5784, "key": "Return", "modifiers": []}
-{"type": "key", "t": 7584, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7710, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7842, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8016, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8192, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8336, "key": "Space", "modifiers": []}
-{"type": "key", "t": 8524, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8663, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8830, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8956, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9091, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9202, "key": "Space", "modifiers": []}
-{"type": "key", "t": 9348, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9491, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9611, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9787, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9965, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10110, "key": "Space", "modifiers": []}
-{"type": "key", "t": 10235, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10418, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10781, "key": "Return", "modifiers": []}
-{"type": "key", "t": 17700, "key": "Character", "modifiers": ["Ctrl", "Shift"]}
+{"type":"cursor_shape","t":51,"shape":"arrow"}
+{"type":"key","t":1704,"key":"Character","modifiers":[]}
+{"type":"key","t":1791,"key":"Character","modifiers":[]}
+{"type":"key","t":4096,"key":"Return","modifiers":[]}
+{"type":"key","t":5613,"key":"Character","modifiers":[]}
+{"type":"key","t":5654,"key":"Character","modifiers":[]}
+{"type":"key","t":6267,"key":"Return","modifiers":[]}
+{"type":"key","t":7550,"key":"Character","modifiers":["Ctrl","Shift"]}
