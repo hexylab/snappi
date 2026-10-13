@@ -1,3 +1,4 @@
+use super::clock::RecordingClock;
 use crate::config::RecordingEvent;
 use anyhow::Result;
 use std::path::Path;
@@ -11,6 +12,7 @@ pub fn track_focus(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     log::info!("Window focus tracking thread started");
 
@@ -24,7 +26,6 @@ pub fn track_focus(
 
         let events_path = output_dir.join("window_events.jsonl");
         let mut file = std::fs::File::create(&events_path)?;
-        let start_time = std::time::Instant::now();
         let mut last_hwnd: isize = 0;
 
         while is_running.load(Ordering::SeqCst) {
@@ -57,7 +58,7 @@ pub fn track_focus(
                 // Get window rect
                 let mut rect = RECT::default();
                 if GetWindowRect(hwnd, &mut rect).is_ok() {
-                    let t = start_time.elapsed().as_millis() as u64;
+                    let t = clock.now_ms();
                     let event = RecordingEvent::WindowFocus {
                         t,
                         title,
@@ -80,7 +81,7 @@ pub fn track_focus(
 
     #[cfg(not(windows))]
     {
-        let _ = (is_running, is_paused, output_dir);
+        let _ = (is_running, is_paused, output_dir, clock);
     }
 
     log::info!("Window focus tracking stopped");

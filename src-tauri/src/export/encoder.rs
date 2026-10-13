@@ -1,14 +1,16 @@
 use crate::config::defaults::OutputStyle;
-use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent, RecordingMeta};
-use crate::engine::compositor::{ClickEffect, Compositor, KeyOverlay};
+use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent};
+use crate::engine::compositor::{ClickEffect, Compositor, CursorKind, KeyOverlay};
 use crate::engine::cursor_smoother::CursorSmoother;
+use crate::engine::frame_differ::{self, ChangeRegion};
 use crate::engine::preprocessor::preprocess;
-use crate::engine::frame_differ;
-use crate::engine::scene_splitter::{self, split_into_scenes};
-use crate::engine::zoom_planner::generate_zoom_plan;
-use chrono::DateTime;
+use crate::engine::scene_splitter::{self, split_into_scenes, Scene};
+use crate::engine::zoom_planner::{generate_zoom_plan, ZoomKeyframe};
 use crate::export::presets::EncodingParams;
+use crate::recording_data::RecordingData;
 use anyhow::Result;
+use chrono::DateTime;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Progress callback: (stage, progress 0.0-1.0)
@@ -18,6 +20,11 @@ pub type ProgressFn = Box<dyn Fn(&str, f64) + Send>;
 /// 最終出力は H.264 等でさらに圧縮されるため、中間段階で 95 を切る必要はほぼ無い。
 /// BMP (1920x1080 で約 5.9MB) から JPEG q=95 (約 0.4MB) へ約 15 倍のディスク削減。
 const INTERMEDIATE_JPEG_QUALITY: u8 = 95;
+
+/// エクスポート時のフレーム差分のサンプリング間隔（フレーム数）
+const EXPORT_DIFF_SAMPLE_INTERVAL: u64 = 5;
+/// タイムライン UI 用のフレーム差分のサンプリング間隔（応答性重視で粗くする）
+const UI_DIFF_SAMPLE_INTERVAL: u64 = 10;
 
 /// RGB イメージを JPEG として高品質で保存するヘルパー。
 fn save_rgb_as_jpeg(
@@ -37,20 +44,28 @@ fn save_rgb_as_jpeg(
     Ok(())
 }
 
-/// Generate export filename from recording start_time (RFC3339) as YYYYMMDD_hhmmss.
-fn export_filename(start_time: &str, format: &ExportFormat) -> String {
+/// 書き出し先のパスを決める。ファイル名は録画開始時刻（RFC3339）から YYYYMMDD_hhmmss とし、
+/// 同名ファイルが既にあれば `_2`, `_3` … を付けて上書きを避ける。
+fn unique_output_path(output_dir: &Path, start_time: &str, format: &ExportFormat) -> PathBuf {
     let ext = match format {
         ExportFormat::Mp4 => "mp4",
         ExportFormat::Gif => "gif",
         ExportFormat::WebM => "webm",
     };
-    if let Ok(dt) = DateTime::parse_from_rfc3339(start_time) {
-        format!("{}.{}", dt.format("%Y%m%d_%H%M%S"), ext)
-    } else {
+    let stem = match DateTime::parse_from_rfc3339(start_time) {
+        Ok(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
         // Fallback: use current time
-        let now = chrono::Local::now();
-        format!("{}.{}", now.format("%Y%m%d_%H%M%S"), ext)
+        Err(_) => chrono::Local::now().format("%Y%m%d_%H%M%S").to_string(),
+    };
+
+    let first = output_dir.join(format!("{}.{}", stem, ext));
+    if !first.exists() {
+        return first;
     }
+    (2..)
+        .map(|n| output_dir.join(format!("{}_{}.{}", stem, n, ext)))
+        .find(|p| !p.exists())
+        .expect("unbounded range always yields a free name")
 }
 
 pub fn export(
@@ -60,44 +75,54 @@ pub fn export(
     settings: &AppSettings,
     progress: Option<&ProgressFn>,
 ) -> Result<String> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
+    let data = RecordingData::load_by_id(recording_id)?;
 
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
+    log::info!("Starting effects composition for recording {}", recording_id);
+    if let Some(cb) = progress { cb("analyzing", 0.0); }
+    let keyframes = plan_export_keyframes(&data, settings);
 
-    let params = EncodingParams::from_preset(quality, meta.screen_width, meta.screen_height);
+    export_recording_data(&data, &keyframes, format, quality, settings, progress)
+}
+
+/// Export with custom keyframes (from Timeline UI edits).
+pub fn export_with_custom_keyframes(
+    recording_id: &str,
+    keyframes: Vec<ZoomKeyframe>,
+    format: &ExportFormat,
+    quality: &QualityPreset,
+    settings: &AppSettings,
+    progress: Option<&ProgressFn>,
+) -> Result<String> {
+    let data = RecordingData::load_by_id(recording_id)?;
+    export_recording_data(&data, &keyframes, format, quality, settings, progress)
+}
+
+fn export_recording_data(
+    data: &RecordingData,
+    keyframes: &[ZoomKeyframe],
+    format: &ExportFormat,
+    quality: &QualityPreset,
+    settings: &AppSettings,
+    progress: Option<&ProgressFn>,
+) -> Result<String> {
+    let params = EncodingParams::from_preset(quality, data.width(), data.height());
     let style = OutputStyle::from_settings(&params, settings);
 
-    let output_dir = std::path::PathBuf::from(&settings.output.save_directory);
+    let output_dir = PathBuf::from(&settings.output.save_directory);
     std::fs::create_dir_all(&output_dir)?;
+    let output_path = unique_output_path(&output_dir, &data.meta.start_time, format);
 
-    let output_path = output_dir.join(export_filename(&meta.start_time, format));
-
-    // Compose frames with effects engine
-    log::info!("Starting effects composition for recording {}", recording_id);
     if let Some(cb) = progress { cb("composing", 0.0); }
-    let (temp_dir, actual_fps) = compose_frames(&recording_dir, &meta, settings, style, progress)?;
+    let temp_dir = compose_frames(data, settings, style, keyframes, params.fps, progress)?;
     let composed_frames_dir = temp_dir.path().join("frames");
-    log::info!("Effects composition complete (actual fps: {:.1}), encoding...", actual_fps);
+    log::info!("Effects composition complete ({} fps), encoding...", params.fps);
 
     if let Some(cb) = progress { cb("encoding", 0.8); }
     let ffmpeg = find_ffmpeg()?;
-
     match format {
-        ExportFormat::Mp4 => {
-            encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?;
-        }
-        ExportFormat::Gif => {
-            encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params, actual_fps)?;
-        }
-        ExportFormat::WebM => {
-            encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?;
-        }
+        ExportFormat::Mp4 => encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir)?,
+        ExportFormat::Gif => encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params)?,
+        ExportFormat::WebM => encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir)?,
     }
     // temp_dir dropped here → composed frames cleaned up automatically
 
@@ -106,75 +131,125 @@ pub fn export(
     Ok(output_path.to_string_lossy().to_string())
 }
 
+/// シーン分割と、フレーム差分によるシーン BBox の拡張を行う。
+/// 返り値の ChangeRegion は zoom_planner のアイドル判定にも使う。
+fn analyze_scenes(
+    data: &RecordingData,
+    events: &[RecordingEvent],
+    settings: &AppSettings,
+    diff_sample_interval: u64,
+) -> (Vec<Scene>, Vec<ChangeRegion>) {
+    let (w, h) = (data.width() as f64, data.height() as f64);
+    let max_zoom = settings.effects.max_zoom;
+    let mut scenes = split_into_scenes(events, w, h, max_zoom);
+
+    let mut change_regions = Vec::new();
+    if settings.effects.auto_zoom_enabled {
+        let diff_config = frame_differ::DiffConfig {
+            sample_interval: diff_sample_interval,
+            ..frame_differ::DiffConfig::default()
+        };
+        match frame_differ::detect_frame_changes(
+            &data.frames_dir(),
+            &data.frame_times,
+            &extract_mouse_positions(events),
+            data.width(),
+            data.height(),
+            &diff_config,
+        ) {
+            Ok(diff_result) => {
+                log::info!(
+                    "Frame diff: {} change regions detected ({} pairs analyzed, {} excluded)",
+                    diff_result.regions.len(),
+                    diff_result.pairs_analyzed,
+                    diff_result.pairs_excluded,
+                );
+                change_regions = diff_result.regions;
+                if settings.effects.frame_diff_enabled {
+                    scene_splitter::expand_scenes_with_change_regions(
+                        &mut scenes, &change_regions, w, h, max_zoom,
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!("Frame diff analysis failed, using event-only BBox: {}", e);
+            }
+        }
+    }
+
+    (scenes, change_regions)
+}
+
+/// エクスポート用のズームキーフレームを生成する。
+fn plan_export_keyframes(data: &RecordingData, settings: &AppSettings) -> Vec<ZoomKeyframe> {
+    let preprocessed = preprocess(&data.events);
+    log::info!(
+        "Preprocessed {} raw events → {} thinned events, {} drags detected",
+        data.events.len(),
+        preprocessed.events.len(),
+        preprocessed.drags.len(),
+    );
+    let events = preprocessed.events;
+
+    let (mut scenes, change_regions) =
+        analyze_scenes(data, &events, settings, EXPORT_DIFF_SAMPLE_INTERVAL);
+
+    // Phase A (Issue #23): ui_events.jsonl の矩形を各シーンに紐付け
+    crate::engine::ui_context::attach_ui_rects_to_scenes(
+        &mut scenes,
+        &events,
+        data.width() as f64,
+        data.height() as f64,
+    );
+
+    let zoom_keyframes = if settings.effects.auto_zoom_enabled {
+        generate_zoom_plan(&scenes, &data.meta, &settings.effects, &change_regions)
+    } else {
+        Vec::new()
+    };
+    log::info!(
+        "Analyzed {} events → {} scenes → {} zoom keyframes",
+        events.len(),
+        scenes.len(),
+        zoom_keyframes.len(),
+    );
+    for scene in &scenes {
+        log::info!(
+            "  Scene #{}: {}ms-{}ms | bbox({:.0},{:.0} {:.0}x{:.0}) | center({:.0},{:.0}) | zoom {:.2}x | {} events",
+            scene.id,
+            scene.start_ms,
+            scene.end_ms,
+            scene.bbox.x, scene.bbox.y, scene.bbox.width, scene.bbox.height,
+            scene.center_x, scene.center_y,
+            scene.zoom_level,
+            scene.event_count,
+        );
+    }
+    zoom_keyframes
+}
+
 /// Generate zoom keyframes for a recording (used by Timeline UI).
 pub fn generate_keyframes_for_recording(
     recording_id: &str,
     settings: &AppSettings,
-) -> Result<Vec<crate::engine::zoom_planner::ZoomKeyframe>> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
+) -> Result<Vec<ZoomKeyframe>> {
+    let data = RecordingData::load_by_id(recording_id)?;
+    let events = preprocess(&data.events).events;
 
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
-
-    let raw_events = load_events(&recording_dir).unwrap_or_default();
-    let preprocessed = preprocess(&raw_events);
-    let events = preprocessed.events;
-
-    let mut scenes = split_into_scenes(
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-        settings.effects.max_zoom,
-    );
-
-    // Frame diff pre-pass (coarser sampling for UI responsiveness)
-    let mut change_regions: Vec<frame_differ::ChangeRegion> = Vec::new();
-    if settings.effects.auto_zoom_enabled {
-        let frames_dir = recording_dir.join("frames");
-        let frame_count = read_frame_count(&recording_dir);
-        let cursor_for_diff = extract_mouse_positions(&events);
-        let diff_config = frame_differ::DiffConfig {
-            sample_interval: 10,
-            ..frame_differ::DiffConfig::default()
-        };
-        if let Ok(diff_result) = frame_differ::detect_frame_changes(
-            &frames_dir,
-            frame_count,
-            meta.duration_ms,
-            &cursor_for_diff,
-            meta.screen_width,
-            meta.screen_height,
-            &diff_config,
-        ) {
-            change_regions = diff_result.regions;
-            if settings.effects.frame_diff_enabled {
-                scene_splitter::expand_scenes_with_change_regions(
-                    &mut scenes,
-                    &change_regions,
-                    meta.screen_width as f64,
-                    meta.screen_height as f64,
-                    settings.effects.max_zoom,
-                );
-            }
-        }
-    }
+    let (mut scenes, change_regions) =
+        analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
 
     // Phase A (Issue #23): ui_events.jsonl の矩形情報を各シーンに付与。
     // scene.ui_rect が立ったシーンは zoom_planner で矩形ベースのズーム計算に切り替わる。
     crate::engine::ui_context::attach_ui_rects_to_scenes(
         &mut scenes,
-        &raw_events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
+        &data.events,
+        data.width() as f64,
+        data.height() as f64,
     );
 
     let keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&scenes, &meta, &settings.effects, &change_regions)
+        generate_zoom_plan(&scenes, &data.meta, &settings.effects, &change_regions)
     } else {
         Vec::new()
     };
@@ -183,61 +258,10 @@ pub fn generate_keyframes_for_recording(
 }
 
 /// Get scene debug info for a recording (used by Timeline UI).
-pub fn get_recording_scenes(
-    recording_id: &str,
-    settings: &AppSettings,
-) -> Result<Vec<crate::engine::scene_splitter::Scene>> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
-
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
-
-    let raw_events = load_events(&recording_dir).unwrap_or_default();
-    let preprocessed = preprocess(&raw_events);
-    let events = preprocessed.events;
-
-    let mut scenes = split_into_scenes(
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-        settings.effects.max_zoom,
-    );
-
-    // Frame diff pre-pass (coarser sampling for UI responsiveness)
-    if settings.effects.auto_zoom_enabled {
-        let frames_dir = recording_dir.join("frames");
-        let frame_count = read_frame_count(&recording_dir);
-        let cursor_for_diff = extract_mouse_positions(&events);
-        let diff_config = frame_differ::DiffConfig {
-            sample_interval: 10,
-            ..frame_differ::DiffConfig::default()
-        };
-        if let Ok(diff_result) = frame_differ::detect_frame_changes(
-            &frames_dir,
-            frame_count,
-            meta.duration_ms,
-            &cursor_for_diff,
-            meta.screen_width,
-            meta.screen_height,
-            &diff_config,
-        ) {
-            if settings.effects.frame_diff_enabled {
-                scene_splitter::expand_scenes_with_change_regions(
-                    &mut scenes,
-                    &diff_result.regions,
-                    meta.screen_width as f64,
-                    meta.screen_height as f64,
-                    settings.effects.max_zoom,
-                );
-            }
-        }
-    }
-
+pub fn get_recording_scenes(recording_id: &str, settings: &AppSettings) -> Result<Vec<Scene>> {
+    let data = RecordingData::load_by_id(recording_id)?;
+    let events = preprocess(&data.events).events;
+    let (scenes, _) = analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
     Ok(scenes)
 }
 
@@ -248,70 +272,21 @@ pub fn apply_scene_edits_for_recording(
     recording_id: &str,
     edits: Vec<crate::engine::scene_splitter::SceneEditOp>,
     settings: &AppSettings,
-) -> Result<(
-    Vec<crate::engine::scene_splitter::Scene>,
-    Vec<crate::engine::zoom_planner::ZoomKeyframe>,
-)> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
+) -> Result<(Vec<Scene>, Vec<ZoomKeyframe>)> {
+    let data = RecordingData::load_by_id(recording_id)?;
+    let events = preprocess(&data.events).events;
+    let (w, h) = (data.width() as f64, data.height() as f64);
 
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
-
-    let raw_events = load_events(&recording_dir).unwrap_or_default();
-    let preprocessed = preprocess(&raw_events);
-    let events = preprocessed.events;
-
-    let mut scenes = split_into_scenes(
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-        settings.effects.max_zoom,
-    );
-
-    // Frame diff expansion (same as get_recording_scenes)
-    let mut change_regions: Vec<frame_differ::ChangeRegion> = Vec::new();
-    if settings.effects.auto_zoom_enabled {
-        let frames_dir = recording_dir.join("frames");
-        let frame_count = read_frame_count(&recording_dir);
-        let cursor_for_diff = extract_mouse_positions(&events);
-        let diff_config = frame_differ::DiffConfig {
-            sample_interval: 10,
-            ..frame_differ::DiffConfig::default()
-        };
-        if let Ok(diff_result) = frame_differ::detect_frame_changes(
-            &frames_dir,
-            frame_count,
-            meta.duration_ms,
-            &cursor_for_diff,
-            meta.screen_width,
-            meta.screen_height,
-            &diff_config,
-        ) {
-            change_regions = diff_result.regions;
-            if settings.effects.frame_diff_enabled {
-                scene_splitter::expand_scenes_with_change_regions(
-                    &mut scenes,
-                    &change_regions,
-                    meta.screen_width as f64,
-                    meta.screen_height as f64,
-                    settings.effects.max_zoom,
-                );
-            }
-        }
-    }
+    let (scenes, change_regions) =
+        analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
 
     // Apply manual edits
     let mut edited_scenes = scene_splitter::apply_scene_edits(
         &scenes,
         &edits,
         &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
+        w,
+        h,
         settings.effects.max_zoom,
     );
 
@@ -321,23 +296,18 @@ pub fn apply_scene_edits_for_recording(
         scene_splitter::expand_scenes_with_change_regions(
             &mut edited_scenes,
             &change_regions,
-            meta.screen_width as f64,
-            meta.screen_height as f64,
+            w,
+            h,
             settings.effects.max_zoom,
         );
     }
 
     // Phase A (Issue #23): edited_scenes にも UI 矩形を紐付け
-    crate::engine::ui_context::attach_ui_rects_to_scenes(
-        &mut edited_scenes,
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-    );
+    crate::engine::ui_context::attach_ui_rects_to_scenes(&mut edited_scenes, &events, w, h);
 
     // Regenerate keyframes from edited scenes
     let keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&edited_scenes, &meta, &settings.effects, &change_regions)
+        generate_zoom_plan(&edited_scenes, &data.meta, &settings.effects, &change_regions)
     } else {
         Vec::new()
     };
@@ -352,41 +322,25 @@ pub fn compute_activity_center_for_recording(
     end_ms: u64,
     settings: &AppSettings,
 ) -> Result<(f64, f64, f64)> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
-
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
-
-    let raw_events = load_events(&recording_dir).unwrap_or_default();
-    let preprocessed = preprocess(&raw_events);
+    let data = RecordingData::load_by_id(recording_id)?;
+    let preprocessed = preprocess(&data.events);
 
     Ok(scene_splitter::compute_activity_center(
         &preprocessed.events,
         start_ms,
         end_ms,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
+        data.width() as f64,
+        data.height() as f64,
         settings.effects.max_zoom,
     ))
 }
 
 /// Get recording events for Timeline UI (lightweight representation).
 pub fn get_recording_events(recording_id: &str) -> Result<Vec<crate::config::TimelineEvent>> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
-
-    let raw_events = load_events(&recording_dir).unwrap_or_default();
+    let data = RecordingData::load_by_id(recording_id)?;
     let mut timeline_events = Vec::new();
 
-    for event in &raw_events {
+    for event in &data.events {
         let te = match event {
             RecordingEvent::Click { t, btn, x, y } => Some(crate::config::TimelineEvent {
                 time_ms: *t,
@@ -448,374 +402,38 @@ pub fn get_recording_events(recording_id: &str) -> Result<Vec<crate::config::Tim
     Ok(timeline_events)
 }
 
-/// Export with custom keyframes (from Timeline UI edits).
-pub fn export_with_custom_keyframes(
-    recording_id: &str,
-    keyframes: Vec<crate::engine::zoom_planner::ZoomKeyframe>,
-    format: &ExportFormat,
-    quality: &QualityPreset,
-    settings: &AppSettings,
-    progress: Option<&ProgressFn>,
-) -> Result<String> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
-
-    let meta_path = recording_dir.join("meta.json");
-    let meta_str = std::fs::read_to_string(&meta_path)?;
-    let meta: RecordingMeta = serde_json::from_str(&meta_str)?;
-
-    let params = EncodingParams::from_preset(quality, meta.screen_width, meta.screen_height);
-    let style = crate::config::defaults::OutputStyle::from_settings(&params, settings);
-
-    let output_dir = std::path::PathBuf::from(&settings.output.save_directory);
-    std::fs::create_dir_all(&output_dir)?;
-
-    let output_path = output_dir.join(export_filename(&meta.start_time, format));
-
-    if let Some(cb) = progress { cb("composing", 0.0); }
-    let (temp_dir, actual_fps) = compose_frames_with_keyframes(
-        &recording_dir, &meta, settings, style, keyframes, progress,
-    )?;
-    let composed_frames_dir = temp_dir.path().join("frames");
-
-    if let Some(cb) = progress { cb("encoding", 0.8); }
-    let ffmpeg = find_ffmpeg()?;
-    match format {
-        ExportFormat::Mp4 => encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?,
-        ExportFormat::Gif => encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params, actual_fps)?,
-        ExportFormat::WebM => encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &recording_dir, actual_fps)?,
-    }
-
-    if let Some(cb) = progress { cb("complete", 1.0); }
-    Ok(output_path.to_string_lossy().to_string())
-}
-
-/// Compose frames using custom keyframes (for timeline UI).
-fn compose_frames_with_keyframes(
-    recording_dir: &std::path::Path,
-    meta: &RecordingMeta,
-    settings: &AppSettings,
-    style: crate::config::defaults::OutputStyle,
-    zoom_keyframes: Vec<crate::engine::zoom_planner::ZoomKeyframe>,
-    progress: Option<&ProgressFn>,
-) -> Result<(tempfile::TempDir, f64)> {
-    let raw_events = load_events(recording_dir).unwrap_or_default();
-    let preprocessed = preprocess(&raw_events);
-    let events = preprocessed.events;
-
-    let frame_count = read_frame_count(recording_dir);
-    if frame_count == 0 {
-        return Err(anyhow::anyhow!("No frames found in recording"));
-    }
-
-    // frame_timestamps.txt があれば「最初〜最後のフレーム間の実経過時間」で
-    // 平均 fps を算出する（末尾 sleep 分のバイアスを除外）。
-    // 無い場合は従来通り meta.duration_ms ベースにフォールバック。
-    let actual_fps = {
-        let ts = read_frame_timestamps(&recording_dir);
-        match ts {
-            Some(ref v) if v.len() >= 2 => {
-                let span_ms = v.last().copied().unwrap_or(0).saturating_sub(v.first().copied().unwrap_or(0));
-                if span_ms > 0 {
-                    ((v.len() as f64 - 1.0) * 1000.0) / span_ms as f64
-                } else if meta.duration_ms > 0 && frame_count > 1 {
-                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-                } else {
-                    meta.fps as f64
-                }
-            }
-            _ => {
-                if meta.duration_ms > 0 && frame_count > 1 {
-                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-                } else {
-                    meta.fps as f64
-                }
-            }
-        }
-    };
-    let frame_time_step_ms = if frame_count > 1 && meta.duration_ms > 0 {
-        meta.duration_ms / frame_count
-    } else if meta.fps > 0 {
-        1000 / meta.fps as u64
-    } else {
-        33
-    };
-    let dt = 1.0 / actual_fps.max(1.0);
-
-    let raw_positions = extract_mouse_positions(&events);
-    // Adjust for window mode
-    let adjusted_positions = if meta.recording_mode.as_deref() == Some("window") {
-        if let Some(ref rect) = meta.window_initial_rect {
-            raw_positions.into_iter()
-                .map(|(t, x, y)| (t, x - rect[0], y - rect[1]))
-                .collect()
-        } else {
-            raw_positions
-        }
-    } else {
-        raw_positions
-    };
-    let cursor_positions = if settings.effects.cursor_smoothing && !adjusted_positions.is_empty() {
-        CursorSmoother::new().smooth(&adjusted_positions)
-    } else {
-        adjusted_positions
-    };
-
-    let click_effects = if settings.effects.click_ring_enabled {
-        let mut effects = extract_click_effects(&events, 400);
-        if meta.recording_mode.as_deref() == Some("window") {
-            if let Some(ref rect) = meta.window_initial_rect {
-                for eff in &mut effects {
-                    eff.x -= rect[0];
-                    eff.y -= rect[1];
-                }
-            }
-        }
-        effects
-    } else {
-        Vec::new()
-    };
-    let key_overlays = if settings.effects.key_badge_enabled {
-        extract_key_overlays(&events, 1500)
-    } else {
-        Vec::new()
-    };
-
-    let mut compositor = Compositor::new(style, meta.screen_width, meta.screen_height);
-    compositor.set_motion_blur(settings.effects.motion_blur_enabled);
-
-    let temp_dir = tempfile::TempDir::new()?;
-    let composed_frames_dir = temp_dir.path().join("frames");
-    std::fs::create_dir_all(&composed_frames_dir)?;
-
-    let frames_dir = recording_dir.join("frames");
-    let mut kf_index = 0;
-    let mut output_frame_count: u64 = 0;
-
-    for frame_idx in 0..frame_count {
-        let frame_time_ms = frame_idx * frame_time_step_ms;
-
-        while kf_index < zoom_keyframes.len() && zoom_keyframes[kf_index].time_ms <= frame_time_ms {
-            compositor.apply_keyframe(&zoom_keyframes[kf_index]);
-            kf_index += 1;
-        }
-
-        let frame_path = recording_frame_path(&frames_dir, frame_idx);
-        let raw_frame = match image::open(&frame_path) {
-            Ok(img) => img.to_rgba8(),
-            Err(_) => continue,
-        };
-
-        let cursor_pos = find_cursor_at_time(&cursor_positions, frame_time_ms);
-        let active_key = key_overlays.iter().rfind(|ko| ko.is_visible(frame_time_ms));
-
-        let composed = compositor.compose_frame(&raw_frame, frame_time_ms, cursor_pos, &click_effects, active_key, dt);
-        let rgb_frame = image::DynamicImage::ImageRgba8(composed).to_rgb8();
-        let output_path = composed_frames_dir.join(format!("frame_{:08}.jpg", output_frame_count));
-        save_rgb_as_jpeg(&rgb_frame, &output_path, INTERMEDIATE_JPEG_QUALITY)?;
-        output_frame_count += 1;
-
-        if frame_idx % 10 == 0 {
-            if let Some(cb) = progress {
-                let p = (frame_idx as f64 / frame_count as f64) * 0.8;
-                cb("composing", p);
-            }
-        }
-    }
-
-    let final_fps = if output_frame_count > 0 && meta.duration_ms > 0 {
-        (output_frame_count as f64 * 1000.0) / meta.duration_ms as f64
-    } else {
-        actual_fps
-    };
-
-    Ok((temp_dir, final_fps))
-}
-
 // --- Effects composition pipeline ---
 
+/// エフェクトを合成した出力フレームを一時ディレクトリに書き出す。
+///
+/// 出力は `fps` で等間隔に作る。出力フレーム k（時刻 t = k / fps）には「t 以前で最も新しい
+/// 元フレーム」を使い、カーソル・クリック・キー表示・カメラもすべて時刻 t で評価する。
+/// これにより実キャプチャが可変フレームレートでも、映像とイベントの時刻が揃う。
 fn compose_frames(
-    recording_dir: &std::path::Path,
-    meta: &RecordingMeta,
+    data: &RecordingData,
     settings: &AppSettings,
     style: OutputStyle,
+    zoom_keyframes: &[ZoomKeyframe],
+    fps: u32,
     progress: Option<&ProgressFn>,
-) -> Result<(tempfile::TempDir, f64)> {
-    let raw_events = load_events(recording_dir).unwrap_or_default();
-
-    // Preprocess: thin mouse moves and detect drags
-    let preprocessed = preprocess(&raw_events);
-    let events = preprocessed.events;
-    log::info!(
-        "Preprocessed {} raw events → {} thinned events, {} drags detected",
-        raw_events.len(),
-        events.len(),
-        preprocessed.drags.len(),
-    );
-
-    // Read frame count first (needed for timing calculation)
-    let frame_count = read_frame_count(recording_dir);
-    if frame_count == 0 {
+) -> Result<tempfile::TempDir> {
+    if data.frame_count() == 0 {
         return Err(anyhow::anyhow!("No frames found in recording"));
     }
 
-    // Calculate actual recording framerate from real data
-    // Events use real-time timestamps (ms from recording start),
-    // so frame timing must match the actual recording duration
-    // frame_timestamps.txt があれば「最初〜最後のフレーム間の実経過時間」で
-    // 平均 fps を算出する（末尾 sleep 分のバイアスを除外）。
-    // 無い場合は従来通り meta.duration_ms ベースにフォールバック。
-    let actual_fps = {
-        let ts = read_frame_timestamps(&recording_dir);
-        match ts {
-            Some(ref v) if v.len() >= 2 => {
-                let span_ms = v.last().copied().unwrap_or(0).saturating_sub(v.first().copied().unwrap_or(0));
-                if span_ms > 0 {
-                    ((v.len() as f64 - 1.0) * 1000.0) / span_ms as f64
-                } else if meta.duration_ms > 0 && frame_count > 1 {
-                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-                } else {
-                    meta.fps as f64
-                }
-            }
-            _ => {
-                if meta.duration_ms > 0 && frame_count > 1 {
-                    (frame_count as f64 * 1000.0) / meta.duration_ms as f64
-                } else {
-                    meta.fps as f64
-                }
-            }
-        }
-    };
-    let frame_time_step_ms = if frame_count > 1 && meta.duration_ms > 0 {
-        meta.duration_ms / frame_count
-    } else if meta.fps > 0 {
-        1000 / meta.fps as u64
-    } else {
-        33
-    };
-    let dt = 1.0 / actual_fps.max(1.0);
+    let events = preprocess(&data.events).events;
 
-    // 1. Split events into scenes and generate lookahead zoom plan
-    let mut scenes = split_into_scenes(
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-        settings.effects.max_zoom,
-    );
-
-    // 1.5. Frame diff pre-pass: expand BBoxes with visual change regions
-    // Also collect change_regions for idle detection in zoom_planner
-    let mut change_regions: Vec<frame_differ::ChangeRegion> = Vec::new();
-    if settings.effects.auto_zoom_enabled {
-        if let Some(cb) = progress { cb("analyzing", 0.0); }
-        let cursor_for_diff = extract_mouse_positions(&events);
-        let diff_config = frame_differ::DiffConfig::default();
-        match frame_differ::detect_frame_changes(
-            &recording_dir.join("frames"),
-            frame_count,
-            meta.duration_ms,
-            &cursor_for_diff,
-            meta.screen_width,
-            meta.screen_height,
-            &diff_config,
-        ) {
-            Ok(diff_result) => {
-                log::info!(
-                    "Frame diff: {} change regions detected ({} pairs analyzed, {} excluded)",
-                    diff_result.regions.len(),
-                    diff_result.pairs_analyzed,
-                    diff_result.pairs_excluded,
-                );
-                change_regions = diff_result.regions;
-                if settings.effects.frame_diff_enabled {
-                    scene_splitter::expand_scenes_with_change_regions(
-                        &mut scenes,
-                        &change_regions,
-                        meta.screen_width as f64,
-                        meta.screen_height as f64,
-                        settings.effects.max_zoom,
-                    );
-                }
-            }
-            Err(e) => {
-                log::warn!("Frame diff analysis failed, using event-only BBox: {}", e);
-            }
-        }
-    }
-
-    // Phase A (Issue #23): ui_events.jsonl の矩形を各シーンに紐付け
-    crate::engine::ui_context::attach_ui_rects_to_scenes(
-        &mut scenes,
-        &events,
-        meta.screen_width as f64,
-        meta.screen_height as f64,
-    );
-
-    let zoom_keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&scenes, meta, &settings.effects, &change_regions)
-    } else {
-        Vec::new()
-    };
-    log::info!(
-        "Analyzed {} events → {} scenes → {} zoom keyframes (actual_fps: {:.1}, frame_step: {}ms)",
-        events.len(),
-        scenes.len(),
-        zoom_keyframes.len(),
-        actual_fps,
-        frame_time_step_ms,
-    );
-    for scene in &scenes {
-        log::info!(
-            "  Scene #{}: {}ms-{}ms | bbox({:.0},{:.0} {:.0}x{:.0}) | center({:.0},{:.0}) | zoom {:.2}x | {} events",
-            scene.id,
-            scene.start_ms,
-            scene.end_ms,
-            scene.bbox.x, scene.bbox.y, scene.bbox.width, scene.bbox.height,
-            scene.center_x, scene.center_y,
-            scene.zoom_level,
-            scene.event_count,
-        );
-    }
-
-    // 2. Smooth cursor positions (and adjust for window mode)
+    // カーソル位置（座標は RecordingData でキャプチャ領域基準に変換済み）
     let raw_positions = extract_mouse_positions(&events);
-    // For window mode: convert screen coords → window-relative coords
-    let adjusted_positions = if meta.recording_mode.as_deref() == Some("window") {
-        if let Some(ref rect) = meta.window_initial_rect {
-            let win_x = rect[0];
-            let win_y = rect[1];
-            log::info!("Window mode: adjusting cursor coords by offset ({}, {})", win_x, win_y);
-            raw_positions.into_iter()
-                .map(|(t, x, y)| (t, x - win_x, y - win_y))
-                .collect()
-        } else {
-            raw_positions
-        }
+    let cursor_positions = if settings.effects.cursor_smoothing && !raw_positions.is_empty() {
+        CursorSmoother::new().smooth(&raw_positions)
     } else {
         raw_positions
     };
-    let cursor_positions = if settings.effects.cursor_smoothing && !adjusted_positions.is_empty() {
-        CursorSmoother::new().smooth(&adjusted_positions)
-    } else {
-        adjusted_positions
-    };
+    let cursor_shapes = extract_cursor_shapes(&events);
 
-    // 3. Build effect lists (also adjust for window mode)
     let click_effects = if settings.effects.click_ring_enabled {
-        let mut effects = extract_click_effects(&events, style.click_ring_duration_ms);
-        if meta.recording_mode.as_deref() == Some("window") {
-            if let Some(ref rect) = meta.window_initial_rect {
-                for eff in &mut effects {
-                    eff.x -= rect[0];
-                    eff.y -= rect[1];
-                }
-            }
-        }
-        effects
+        extract_click_effects(&events, style.click_ring_duration_ms)
     } else {
         Vec::new()
     };
@@ -825,129 +443,78 @@ fn compose_frames(
         Vec::new()
     };
 
-    // 4. Create compositor
-    let mut compositor = Compositor::new(style, meta.screen_width, meta.screen_height);
+    let mut compositor = Compositor::new(style, data.width(), data.height());
     compositor.set_motion_blur(settings.effects.motion_blur_enabled);
 
-    // 5. Create temp directory for composed frames
     let temp_dir = tempfile::TempDir::new()?;
     let composed_frames_dir = temp_dir.path().join("frames");
     std::fs::create_dir_all(&composed_frames_dir)?;
 
-    let frames_dir = recording_dir.join("frames");
+    let output_times = data.output_frame_times(fps);
+    let total = output_times.len();
+    let dt = 1.0 / fps.max(1) as f64;
+    log::info!(
+        "Composing {} output frames at {} fps from {} captured frames",
+        total,
+        fps,
+        data.frame_count(),
+    );
+
     let mut kf_index = 0;
     let mut output_frame_count: u64 = 0;
+    // 同じ元フレームが連続して使われることが多いため、直前に読んだフレームを使い回す
+    let mut current: Option<(u64, image::RgbaImage)> = None;
 
-    // 6. Process each frame
-    for frame_idx in 0..frame_count {
-        let frame_time_ms = frame_idx * frame_time_step_ms;
-
+    for (k, &time_ms) in output_times.iter().enumerate() {
         // Apply any zoom keyframes that have been reached
-        while kf_index < zoom_keyframes.len()
-            && zoom_keyframes[kf_index].time_ms <= frame_time_ms
-        {
+        while kf_index < zoom_keyframes.len() && zoom_keyframes[kf_index].time_ms <= time_ms {
             compositor.apply_keyframe(&zoom_keyframes[kf_index]);
             kf_index += 1;
         }
 
-        // Load raw frame
-        let frame_path = recording_frame_path(&frames_dir, frame_idx);
-        let raw_frame = match image::open(&frame_path) {
-            Ok(img) => img.to_rgba8(),
-            Err(_) => {
-                log::warn!("Frame {} not found, skipping", frame_idx);
-                continue;
+        let frame_idx = data.frame_index_at(time_ms);
+        if current.as_ref().map(|(idx, _)| *idx) != Some(frame_idx) {
+            match image::open(data.frame_path(frame_idx)) {
+                Ok(img) => current = Some((frame_idx, img.to_rgba8())),
+                // 読めないフレームは直前のフレームで代用する
+                Err(e) => log::warn!("Frame {} could not be loaded: {}", frame_idx, e),
             }
+        }
+        let Some((_, raw_frame)) = current.as_ref() else {
+            continue;
         };
 
-        // Find cursor position for this frame time
-        let cursor_pos = find_cursor_at_time(&cursor_positions, frame_time_ms);
+        let cursor_pos = find_cursor_at_time(&cursor_positions, time_ms);
+        let cursor_kind = cursor_kind_at_time(&cursor_shapes, time_ms);
+        let active_key = key_overlays.iter().rfind(|ko| ko.is_visible(time_ms));
 
-        // Find active key overlay
-        let active_key = key_overlays.iter().rfind(|ko| ko.is_visible(frame_time_ms));
-
-        // Compose frame with all effects
         let composed = compositor.compose_frame(
-            &raw_frame,
-            frame_time_ms,
+            raw_frame,
+            time_ms,
             cursor_pos,
+            cursor_kind,
             &click_effects,
             active_key,
             dt,
         );
 
-        // 合成済みフレームを JPEG q=95 で保存。
-        // BMP 時代と比較してディスク使用量を約 15 倍削減できる。
-        // 最終出力は H.264/VP9 等で再エンコードされるため、
-        // 中間段階で q=95 以上の品質はほぼ無意味。
+        // 合成済みフレームを JPEG q=95 で保存（アルファ非対応のため RGB に変換）。
         // シーケンス番号にギャップを作らないため output_frame_count を使う。
-        // RGBA→RGB で JPEG のアルファ非対応にも対応。
         let rgb_frame = image::DynamicImage::ImageRgba8(composed).to_rgb8();
         let output_path = composed_frames_dir.join(format!("frame_{:08}.jpg", output_frame_count));
         save_rgb_as_jpeg(&rgb_frame, &output_path, INTERMEDIATE_JPEG_QUALITY)?;
         output_frame_count += 1;
 
-        if frame_idx % 10 == 0 {
-            log::info!("Composing frame {}/{}", frame_idx, frame_count);
+        if k % 10 == 0 {
+            log::info!("Composing frame {}/{}", k, total);
             if let Some(cb) = progress {
-                let p = (frame_idx as f64 / frame_count as f64) * 0.8;
-                cb("composing", p);
+                cb("composing", (k as f64 / total as f64) * 0.8);
             }
         }
     }
 
-    // Recalculate fps based on actual output frame count (in case some frames were skipped)
-    let final_fps = if output_frame_count > 0 && meta.duration_ms > 0 {
-        (output_frame_count as f64 * 1000.0) / meta.duration_ms as f64
-    } else {
-        actual_fps
-    };
-    log::info!("Composed {} frames (final fps: {:.1})", output_frame_count, final_fps);
-
-    Ok((temp_dir, final_fps))
-}
-
-fn load_events(recording_dir: &std::path::Path) -> Result<Vec<RecordingEvent>> {
-    let mut events = Vec::new();
-
-    // Load main events
-    let events_path = recording_dir.join("events.jsonl");
-    if events_path.exists() {
-        let content = std::fs::read_to_string(&events_path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
-                    events.push(event);
-                }
-            }
-        }
-    }
-
-    // Phase A (Issue #23): UI Automation 由来の矩形イベントも取り込む。
-    // これを `attach_ui_rects_to_scenes` に渡して各シーンに ui_rect を付与する。
-    let ui_events_path = recording_dir.join("ui_events.jsonl");
-    if ui_events_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&ui_events_path) {
-            let mut ui_count: usize = 0;
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() { continue; }
-                if let Ok(event) = serde_json::from_str::<RecordingEvent>(line) {
-                    events.push(event);
-                    ui_count += 1;
-                }
-            }
-            log::info!("Loaded {} UI events from ui_events.jsonl", ui_count);
-        }
-    }
-
-    // Note: window_events.jsonl is no longer loaded for the zoom pipeline.
-    // The 2-state zoom model (Overview ↔ WorkArea) does not use window focus tracking.
-
-    // Sort by timestamp
-    events.sort_by_key(|e| crate::engine::analyzer::event_timestamp(e));
-    Ok(events)
+    log::info!("Composed {} frames", output_frame_count);
+    Ok(temp_dir)
 }
 
 fn extract_mouse_positions(events: &[RecordingEvent]) -> Vec<(u64, f64, f64)> {
@@ -959,6 +526,27 @@ fn extract_mouse_positions(events: &[RecordingEvent]) -> Vec<(u64, f64, f64)> {
             _ => None,
         })
         .collect()
+}
+
+/// カーソル形状の変化 `(t, 種類)` を時刻順に取り出す。
+fn extract_cursor_shapes(events: &[RecordingEvent]) -> Vec<(u64, CursorKind)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            RecordingEvent::CursorShape { t, shape } => Some((*t, CursorKind::from_shape(shape))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 時刻 `time_ms` のカーソル形状。記録が無い（旧形式の録画）・最初の記録より前は矢印。
+fn cursor_kind_at_time(shapes: &[(u64, CursorKind)], time_ms: u64) -> CursorKind {
+    let idx = shapes.partition_point(|&(t, _)| t <= time_ms);
+    if idx == 0 {
+        CursorKind::Arrow
+    } else {
+        shapes[idx - 1].1
+    }
 }
 
 fn extract_click_effects(events: &[RecordingEvent], duration_ms: u64) -> Vec<ClickEffect> {
@@ -1029,79 +617,26 @@ fn find_cursor_at_time(positions: &[(u64, f64, f64)], time_ms: u64) -> Option<(f
     }
 }
 
-/// 録画フレームのパスを解決する。新しい録画は `.jpg`、旧録画は `.png` で保存されている
-/// ため両方をチェックする。ファイルが見つからない場合は `.jpg` のパスを返す（呼び出し側が
-/// エラーを出す想定）。
-pub fn recording_frame_path(frames_dir: &std::path::Path, idx: u64) -> std::path::PathBuf {
-    let jpg = frames_dir.join(format!("frame_{:08}.jpg", idx));
-    if jpg.exists() {
-        return jpg;
-    }
-    let png = frames_dir.join(format!("frame_{:08}.png", idx));
-    if png.exists() {
-        return png;
-    }
-    jpg
-}
-
-/// capture 側が保存した frame_timestamps.txt を読み込み、録画開始からの各フレームの
-/// 経過 ms を返す。ファイルが無い・行が壊れている場合は None。
-///
-/// 返り値を使うことで「(frame_count - 1) * 1000 / 最終タイムスタンプ」として
-/// 実キャプチャ fps を算出でき、meta.duration_ms の末尾sleepバイアスを回避できる。
-fn read_frame_timestamps(recording_dir: &std::path::Path) -> Option<Vec<u64>> {
-    let path = recording_dir.join("frame_timestamps.txt");
-    let content = std::fs::read_to_string(&path).ok()?;
-    let mut out = Vec::with_capacity(1024);
-    for line in content.lines() {
-        let s = line.trim();
-        if s.is_empty() { continue; }
-        match s.parse::<u64>() {
-            Ok(v) => out.push(v),
-            Err(_) => return None,
-        }
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
-
-fn read_frame_count(recording_dir: &std::path::Path) -> u64 {
-    // meta.json に統合された frame_count を優先的に読む。
-    // 旧録画 (frame_count フィールドなし) では frame_count.txt にフォールバックする。
-    let meta_path = recording_dir.join("meta.json");
-    if let Ok(content) = std::fs::read_to_string(&meta_path) {
-        if let Ok(meta) = serde_json::from_str::<crate::config::RecordingMeta>(&content) {
-            if let Some(fc) = meta.frame_count {
-                return fc as u64;
-            }
-        }
-    }
-    let frame_count_path = recording_dir.join("frame_count.txt");
-    std::fs::read_to_string(&frame_count_path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
-}
-
 // --- Thumbnail generation ---
 
 pub fn generate_thumbnail(recording_id: &str) -> Result<String> {
-    let recording_dir = dirs::video_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Snappi")
-        .join("recordings")
-        .join(recording_id);
+    use crate::recording_data::{frame_path, read_frame_count};
+
+    let recording_dir = crate::recording_data::recording_dir(recording_id);
+    let meta: crate::config::RecordingMeta =
+        serde_json::from_str(&std::fs::read_to_string(recording_dir.join("meta.json"))?)?;
 
     let frames_dir = recording_dir.join("frames");
-    let frame_count = read_frame_count(&recording_dir).max(1);
+    let frame_count = read_frame_count(&recording_dir, &meta).max(1);
     let target_frame = (frame_count as f64 * 0.3) as u64;
 
-    // Try target frame, then fallback to frame 0. recording_frame_path が .jpg/.png を
+    // Try target frame, then fallback to frame 0. frame_path が .jpg/.png を
     // 解決するので、旧録画（PNG 保存）と新録画（JPEG 保存）の両方に対応する。
-    let target_path = recording_frame_path(&frames_dir, target_frame);
+    let target_path = frame_path(&frames_dir, target_frame);
     let frame_path = if target_path.exists() {
         target_path
     } else {
-        let fallback = recording_frame_path(&frames_dir, 0);
+        let fallback = frame_path(&frames_dir, 0);
         if !fallback.exists() {
             return Err(anyhow::anyhow!("No frames found for thumbnail"));
         }
@@ -1209,13 +744,12 @@ fn encode_mp4(
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
-    input_fps: f64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
-    // Input: composed BMP frames at actual recording framerate
+    // Input: 合成済みフレーム（プリセットの fps で等間隔に作成済み）
     cmd.args(["-y", "-framerate"])
-        .arg(format!("{:.2}", input_fps))
+        .arg(params.fps.to_string())
         .args(["-i"])
         .arg(
             frames_dir
@@ -1266,7 +800,6 @@ fn encode_gif(
     frames_dir: &std::path::Path,
     output: &std::path::Path,
     params: &EncodingParams,
-    input_fps: f64,
 ) -> Result<()> {
     let palette_path = output.with_extension("palette.png");
     let width = params.canvas_width.min(640);
@@ -1274,7 +807,7 @@ fn encode_gif(
     // Pass 1: Generate palette
     Command::new(ffmpeg)
         .args(["-y", "-framerate"])
-        .arg(format!("{:.2}", input_fps))
+        .arg(params.fps.to_string())
         .args(["-i"])
         .arg(
             frames_dir
@@ -1290,7 +823,7 @@ fn encode_gif(
     // Pass 2: Generate GIF with palette
     Command::new(ffmpeg)
         .args(["-y", "-framerate"])
-        .arg(format!("{:.2}", input_fps))
+        .arg(params.fps.to_string())
         .args(["-i"])
         .arg(
             frames_dir
@@ -1319,13 +852,12 @@ fn encode_webm(
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
-    input_fps: f64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
-    // Input: composed BMP frames at actual recording framerate
+    // Input: 合成済みフレーム（プリセットの fps で等間隔に作成済み）
     cmd.args(["-y", "-framerate"])
-        .arg(format!("{:.2}", input_fps))
+        .arg(params.fps.to_string())
         .args(["-i"])
         .arg(
             frames_dir
@@ -1367,4 +899,42 @@ fn encode_webm(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unique_output_path_avoids_overwrite() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let start = "2026-10-13T09:08:07+09:00";
+
+        let first = unique_output_path(tmp.path(), start, &ExportFormat::Mp4);
+        assert_eq!(first.file_name().unwrap(), "20261013_090807.mp4");
+        std::fs::write(&first, b"").unwrap();
+
+        let second = unique_output_path(tmp.path(), start, &ExportFormat::Mp4);
+        assert_eq!(second.file_name().unwrap(), "20261013_090807_2.mp4");
+        std::fs::write(&second, b"").unwrap();
+
+        let third = unique_output_path(tmp.path(), start, &ExportFormat::Mp4);
+        assert_eq!(third.file_name().unwrap(), "20261013_090807_3.mp4");
+
+        // 形式が違えば別名にしない
+        let gif = unique_output_path(tmp.path(), start, &ExportFormat::Gif);
+        assert_eq!(gif.file_name().unwrap(), "20261013_090807.gif");
+    }
+
+    #[test]
+    fn test_cursor_kind_at_time() {
+        let shapes = vec![(100, CursorKind::IBeam), (500, CursorKind::Hand), (900, CursorKind::Arrow)];
+        assert_eq!(cursor_kind_at_time(&shapes, 0), CursorKind::Arrow);
+        assert_eq!(cursor_kind_at_time(&shapes, 100), CursorKind::IBeam);
+        assert_eq!(cursor_kind_at_time(&shapes, 499), CursorKind::IBeam);
+        assert_eq!(cursor_kind_at_time(&shapes, 600), CursorKind::Hand);
+        assert_eq!(cursor_kind_at_time(&shapes, 1000), CursorKind::Arrow);
+        // 形状の記録が無い旧録画は矢印
+        assert_eq!(cursor_kind_at_time(&[], 300), CursorKind::Arrow);
+    }
 }

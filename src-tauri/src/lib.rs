@@ -3,6 +3,7 @@ pub mod config;
 pub mod engine;
 pub mod export;
 pub mod recording;
+pub mod recording_data;
 pub mod shortcuts;
 pub mod tray;
 

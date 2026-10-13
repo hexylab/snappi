@@ -3,12 +3,17 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
-/// 各フレーム保存時の「録画開始からの実経過 ms」を記録するファイル名。
-/// 長時間録画で capture スレッドのジッタが蓄積した場合でも、エクスポート時に
-/// 正確な fps を算出できるようにするための補助データ。1行1フレーム。
+use super::clock::RecordingClock;
+
+/// 各フレームを取り込んだ瞬間の録画時刻 (ms) を記録するファイル名。1行1フレーム。
+/// キャプチャは可変フレームレートになるため、エクスポート時はこの時刻を基準に
+/// 出力フレームへ元フレームを割り当てる。
 pub const FRAME_TIMESTAMPS_FILE: &str = "frame_timestamps.txt";
+
+/// ウィンドウ録画中のウィンドウ矩形の履歴を記録するファイル名。
+/// 矩形が変化したときに `{"t":..,"rect":[left,top,right,bottom]}` を1行追記する。
+pub const WINDOW_RECTS_FILE: &str = "window_rects.jsonl";
 
 /// 録画フレーム保存に使う JPEG 品質。画面コンテンツ（テキスト/UI）は q=92 で
 /// 視覚的に PNG とほぼ区別が付かず、1920x1080 で PNG ~3-4MB から JPEG ~300KB 程度に。
@@ -47,6 +52,7 @@ pub fn capture_window(
     output_dir: &Path,
     fps: u32,
     hwnd_raw: isize,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::UI::WindowsAndMessaging::*;
@@ -65,10 +71,12 @@ pub fn capture_window(
     let frame_interval = std::time::Duration::from_nanos(1_000_000_000 / fps as u64);
     let mut frame_count: u64 = 0;
 
-    // 録画開始時刻。各フレーム保存時の経過 ms を frame_timestamps.txt に記録する。
-    let session_start = Instant::now();
     let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
     let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
+    let mut rects_writer = std::fs::File::create(output_dir.join(WINDOW_RECTS_FILE))
+        .ok()
+        .map(std::io::BufWriter::new);
+    let mut last_rect: Option<[i32; 4]> = None;
 
     unsafe {
         let hwnd = HWND(hwnd_raw as *mut _);
@@ -150,10 +158,11 @@ pub fn capture_window(
                 // Window may have been closed - reuse last frame or skip
                 if let Some(ref buf) = last_buffer {
                     if last_width > 0 && last_height > 0 {
+                        let t = clock.now_ms();
                         let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
                         let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
                         if let Some(w) = ts_writer.as_mut() {
-                            let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                            let _ = writeln!(w, "{}", t);
                         }
                         frame_count += 1;
                     }
@@ -172,10 +181,11 @@ pub fn capture_window(
                 // Window is minimized - reuse last frame
                 if let Some(ref buf) = last_buffer {
                     if last_width > 0 && last_height > 0 {
+                        let t = clock.now_ms();
                         let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
                         let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
                         if let Some(w) = ts_writer.as_mut() {
-                            let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                            let _ = writeln!(w, "{}", t);
                         }
                         frame_count += 1;
                     }
@@ -185,6 +195,20 @@ pub fn capture_window(
                     std::thread::sleep(frame_interval - elapsed);
                 }
                 continue;
+            }
+
+            // ウィンドウ矩形が変わったら履歴に追記する（イベント座標の変換に使う）
+            let rect_arr = [rect.left, rect.top, rect.right, rect.bottom];
+            if last_rect != Some(rect_arr) {
+                last_rect = Some(rect_arr);
+                if let Some(w) = rects_writer.as_mut() {
+                    let _ = writeln!(
+                        w,
+                        r#"{{"t":{},"rect":[{},{},{},{}]}}"#,
+                        clock.now_ms(), rect.left, rect.top, rect.right, rect.bottom
+                    );
+                    let _ = w.flush();
+                }
             }
 
             // Save dimensions (update on resize)
@@ -199,6 +223,9 @@ pub fn capture_window(
             let mem_dc = CreateCompatibleDC(screen_dc);
             let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
             let old_bitmap = SelectObject(mem_dc, bitmap);
+
+            // 取り込み瞬間の時刻（JPEG 保存後ではなく、ここをフレーム時刻とする）
+            let t = clock.now_ms();
 
             // Strategy 1: PrintWindow with PW_RENDERFULLCONTENT
             // This asks DWM to render the full composited content (works for GPU-accelerated apps)
@@ -253,7 +280,7 @@ pub fn capture_window(
             let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
             let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
             if let Some(w) = ts_writer.as_mut() {
-                let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                let _ = writeln!(w, "{}", t);
             }
 
             last_buffer = Some(buffer);
@@ -272,6 +299,9 @@ pub fn capture_window(
     if let Some(mut w) = ts_writer {
         let _ = w.flush();
     }
+    if let Some(mut w) = rects_writer {
+        let _ = w.flush();
+    }
 
     log::info!("Window capture stopped. Total frames: {}", frame_count);
     std::fs::write(output_dir.join("frame_count.txt"), frame_count.to_string())?;
@@ -286,6 +316,7 @@ pub fn capture_window(
     _output_dir: &Path,
     _fps: u32,
     _hwnd_raw: isize,
+    _clock: Arc<RecordingClock>,
 ) -> Result<()> {
     Err(anyhow::anyhow!("Window capture is only supported on Windows"))
 }
@@ -300,6 +331,7 @@ pub fn capture_area(
     area_y: i32,
     area_w: i32,
     area_h: i32,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     log::info!("Area capture started ({},{} {}x{}, {}fps)", area_x, area_y, area_w, area_h, fps);
 
@@ -313,8 +345,6 @@ pub fn capture_area(
     let dims = format!("{}x{}", area_w, area_h);
     std::fs::write(output_dir.join("dimensions.txt"), &dims)?;
 
-    // 録画開始時刻。各フレームの実経過 ms を記録
-    let session_start = Instant::now();
     let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
     let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
 
@@ -354,6 +384,7 @@ pub fn capture_area(
                     continue;
                 }
 
+                let t = clock.now_ms();
                 let _ = BitBlt(mem_dc, 0, 0, area_w, area_h, screen_dc, area_x, area_y, SRCCOPY);
 
                 GetDIBits(
@@ -369,7 +400,7 @@ pub fn capture_area(
                 let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
                 let _ = save_frame_as_jpeg(&buffer, area_w as u32, area_h as u32, &frame_path);
                 if let Some(w) = ts_writer.as_mut() {
-                    let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                    let _ = writeln!(w, "{}", t);
                 }
 
                 frame_count += 1;
@@ -404,6 +435,7 @@ pub fn capture_screen(
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
     fps: u32,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     log::info!("Screen capture thread started (GDI mode, {}fps)", fps);
 
@@ -413,8 +445,6 @@ pub fn capture_screen(
     let frame_interval = std::time::Duration::from_nanos(1_000_000_000 / fps as u64);
     let mut frame_count: u64 = 0;
 
-    // 録画開始時刻。各フレームの実経過 ms を記録
-    let session_start = Instant::now();
     let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
     let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
 
@@ -462,7 +492,8 @@ pub fn capture_screen(
                     continue;
                 }
 
-                // Capture screen
+                // Capture screen（取り込み瞬間の時刻をフレーム時刻とする）
+                let t = clock.now_ms();
                 let _ = BitBlt(mem_dc, 0, 0, width, height, screen_dc, 0, 0, SRCCOPY);
 
                 // Get pixel data
@@ -485,7 +516,7 @@ pub fn capture_screen(
                 let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
                 let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
                 if let Some(w) = ts_writer.as_mut() {
-                    let _ = writeln!(w, "{}", session_start.elapsed().as_millis() as u64);
+                    let _ = writeln!(w, "{}", t);
                 }
 
                 frame_count += 1;

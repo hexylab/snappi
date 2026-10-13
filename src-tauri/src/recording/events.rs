@@ -3,7 +3,10 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+#[cfg(windows)]
 use std::time::Instant;
+
+use super::clock::RecordingClock;
 
 // Modifier bit flags
 const MOD_CTRL: u8 = 0b0001;
@@ -33,6 +36,7 @@ fn modifiers_from_flags(flags: u8) -> Vec<String> {
 /// クリック重複・欠落問題を解決する
 #[cfg(windows)]
 mod win_hooks {
+    use super::RecordingClock;
     use crate::config::RecordingEvent;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
     use std::sync::Arc;
@@ -48,7 +52,7 @@ mod win_hooks {
 
     pub struct HookSharedState {
         pub events: std::sync::Mutex<Vec<RecordingEvent>>,
-        pub start_time: Instant,
+        pub clock: Arc<RecordingClock>,
         pub last_mouse_time: std::sync::Mutex<Instant>,
         pub modifier_state: AtomicU8,
         pub is_running: Arc<AtomicBool>,
@@ -95,7 +99,7 @@ mod win_hooks {
                 }
 
                 let mouse = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-                let t = state.start_time.elapsed().as_millis() as u64;
+                let t = state.clock.now_ms();
                 let x = mouse.pt.x as f64;
                 let y = mouse.pt.y as f64;
 
@@ -209,7 +213,7 @@ mod win_hooks {
                 }
 
                 let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-                let t = state.start_time.elapsed().as_millis() as u64;
+                let t = state.clock.now_ms();
                 let vk = kb.vkCode;
 
                 match wparam.0 as u32 {
@@ -328,11 +332,68 @@ mod win_hooks {
     }
 }
 
+/// カーソル形状の判定。
+/// `GetCursorInfo` の `hCursor` を、`LoadCursorW(None, IDC_*)` で得たシステム標準カーソルの
+/// ハンドルと比較して種別を求める（標準カーソルは共有ハンドルのため一致比較できる）。
+#[cfg(windows)]
+mod cursor_shape {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    pub struct StandardCursors {
+        handles: Vec<(isize, &'static str)>,
+    }
+
+    impl StandardCursors {
+        pub fn load() -> Self {
+            let ids = [
+                (IDC_ARROW, "arrow"),
+                (IDC_IBEAM, "ibeam"),
+                (IDC_HAND, "hand"),
+                (IDC_WAIT, "wait"),
+                (IDC_APPSTARTING, "wait"),
+                (IDC_SIZENS, "size_ns"),
+                (IDC_SIZEWE, "size_we"),
+                (IDC_SIZENWSE, "size_nwse"),
+                (IDC_SIZENESW, "size_nesw"),
+                (IDC_SIZEALL, "size_all"),
+            ];
+            let handles = ids
+                .iter()
+                .filter_map(|(id, name)| unsafe {
+                    LoadCursorW(None, *id).ok().map(|h| (h.0 as isize, *name))
+                })
+                .collect();
+            Self { handles }
+        }
+
+        /// 現在のカーソル形状。取得できない場合や非表示の場合は None。
+        pub fn current(&self) -> Option<&'static str> {
+            let mut info = CURSORINFO {
+                cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            unsafe { GetCursorInfo(&mut info).ok()? };
+            if info.flags.0 & CURSOR_SHOWING.0 == 0 {
+                return None;
+            }
+            let h = info.hCursor.0 as isize;
+            Some(
+                self.handles
+                    .iter()
+                    .find(|(handle, _)| *handle == h)
+                    .map(|(_, name)| *name)
+                    .unwrap_or("other"),
+            )
+        }
+    }
+}
+
 pub fn collect_events(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
     record_key_labels: bool,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     let events_path = output_dir.join("events.jsonl");
     let mut file = std::fs::File::create(&events_path)?;
@@ -351,7 +412,7 @@ pub fn collect_events(
 
         let shared = Arc::new(win_hooks::HookSharedState {
             events: std::sync::Mutex::new(Vec::new()),
-            start_time: Instant::now(),
+            clock: clock.clone(),
             last_mouse_time: std::sync::Mutex::new(Instant::now()),
             modifier_state: AtomicU8::new(0),
             is_running: is_running.clone(),
@@ -419,9 +480,27 @@ pub fn collect_events(
         // フック準備完了を待機
         let _ = ready_rx.recv();
 
-        // イベントバッファを定期的にファイルへフラッシュ
+        let cursor_shapes = cursor_shape::StandardCursors::load();
+        let mut last_cursor_shape: Option<&'static str> = None;
+
+        // イベントバッファを定期的にファイルへフラッシュ。
+        // 同じループでカーソル形状をポーリングし、変化したときだけ記録する。
         while is_running.load(Ordering::SeqCst) {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            if !is_paused.load(Ordering::SeqCst) {
+                if let Some(shape) = cursor_shapes.current() {
+                    if last_cursor_shape != Some(shape) {
+                        last_cursor_shape = Some(shape);
+                        if let Ok(mut buf) = shared.events.lock() {
+                            buf.push(crate::config::RecordingEvent::CursorShape {
+                                t: clock.now_ms(),
+                                shape: shape.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
 
             let mut buffer = shared.events.lock().unwrap();
             for event in buffer.drain(..) {
@@ -458,7 +537,7 @@ pub fn collect_events(
     #[cfg(not(windows))]
     {
         // Windows以外ではイベント収集なし
-        let _ = record_key_labels; // avoid unused variable warning
+        let _ = (record_key_labels, clock); // avoid unused variable warning
         while is_running.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

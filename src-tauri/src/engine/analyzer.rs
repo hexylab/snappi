@@ -378,6 +378,7 @@ pub fn event_timestamp(event: &RecordingEvent) -> u64 {
         RecordingEvent::UiMenuClose { t, .. } => *t,
         RecordingEvent::UiDialogOpen { t, .. } => *t,
         RecordingEvent::UiDialogClose { t, .. } => *t,
+        RecordingEvent::CursorShape { t, .. } => *t,
     }
 }
 

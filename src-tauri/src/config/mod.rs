@@ -78,16 +78,6 @@ pub struct StyleSettings {
     pub shadow_enabled: bool,
     pub shadow_blur: f64,
     pub shadow_offset_y: f64,
-    /// Path to a custom cursor PNG image (with transparency).
-    /// If set, this is used instead of the system cursor capture.
-    #[serde(default)]
-    pub cursor_image_path: Option<String>,
-    /// Hotspot X coordinate within the cursor image (tip position).
-    #[serde(default)]
-    pub cursor_hotspot_x: u32,
-    /// Hotspot Y coordinate within the cursor image (tip position).
-    #[serde(default)]
-    pub cursor_hotspot_y: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,6 +403,9 @@ pub enum RecordingEvent {
         control: String,
         name: String,
     },
+    /// カーソル形状の変化（"arrow" / "ibeam" / "hand" / "wait" / "size_*" / "other"）
+    #[serde(rename = "cursor_shape")]
+    CursorShape { t: u64, shape: String },
 }
 
 /// Recording info for the frontend list

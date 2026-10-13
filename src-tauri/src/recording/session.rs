@@ -1,3 +1,4 @@
+use super::clock::RecordingClock;
 use crate::config::{AppSettings, RecordingInfo, RecordingMeta, RecordingMode};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,11 +10,10 @@ pub struct RecordingSession {
     recording_dir: std::path::PathBuf,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
-    start_time: Arc<Mutex<Option<std::time::Instant>>>,
-    /// 一時停止中に蓄積した時間（ms）。実効録画時間の算出用。
-    pause_accumulated_ms: Arc<Mutex<u64>>,
-    /// 現在一時停止中ならその開始時刻。resume() で accumulated に足し込む。
-    pause_start: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 全スレッドが共有する録画時計（一時停止中は進まない）
+    clock: Arc<RecordingClock>,
+    /// 録画開始時刻（RFC3339）。meta.start_time と書き出しファイル名に使う。
+    started_at: String,
     fps: u32,
     recording_mode: RecordingMode,
     /// キー入力のラベルを平文で events.jsonl に記録するか（既定: false）。
@@ -37,9 +37,8 @@ impl RecordingSession {
             recording_dir: base_dir,
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
-            start_time: Arc::new(Mutex::new(None)),
-            pause_accumulated_ms: Arc::new(Mutex::new(0)),
-            pause_start: Arc::new(Mutex::new(None)),
+            clock: Arc::new(RecordingClock::new()),
+            started_at: chrono::Local::now().to_rfc3339(),
             fps: settings.recording.fps,
             recording_mode: settings.recording.recording_mode.clone(),
             record_key_labels: settings.recording.record_key_labels,
@@ -53,7 +52,6 @@ impl RecordingSession {
 
     pub fn start(&self) -> Result<()> {
         self.is_running.store(true, Ordering::SeqCst);
-        *self.start_time.lock().unwrap() = Some(std::time::Instant::now());
         log::info!("Recording started: {}", self.id);
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
@@ -64,16 +62,17 @@ impl RecordingSession {
         let dir = self.recording_dir.clone();
         let fps = self.fps;
         let mode = self.recording_mode.clone();
+        let clock = self.clock.clone();
         handles.push(std::thread::spawn(move || {
             let result = match mode {
                 RecordingMode::Window { hwnd, .. } => {
-                    super::capture::capture_window(running, paused, &dir, fps, hwnd)
+                    super::capture::capture_window(running, paused, &dir, fps, hwnd, clock)
                 }
                 RecordingMode::Area { x, y, width, height } => {
-                    super::capture::capture_area(running, paused, &dir, fps, x, y, width, height)
+                    super::capture::capture_area(running, paused, &dir, fps, x, y, width, height, clock)
                 }
                 RecordingMode::Display => {
-                    super::capture::capture_screen(running, paused, &dir, fps)
+                    super::capture::capture_screen(running, paused, &dir, fps, clock)
                 }
             };
             if let Err(e) = result {
@@ -86,8 +85,9 @@ impl RecordingSession {
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
         let rec_keys = self.record_key_labels;
+        let clock = self.clock.clone();
         handles.push(std::thread::spawn(move || {
-            if let Err(e) = super::events::collect_events(running, paused, &dir, rec_keys) {
+            if let Err(e) = super::events::collect_events(running, paused, &dir, rec_keys, clock) {
                 log::error!("Event collection error: {}", e);
             }
         }));
@@ -106,8 +106,9 @@ impl RecordingSession {
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
+        let clock = self.clock.clone();
         handles.push(std::thread::spawn(move || {
-            if let Err(e) = super::focus::track_focus(running, paused, &dir) {
+            if let Err(e) = super::focus::track_focus(running, paused, &dir, clock) {
                 log::error!("Window focus tracking error: {}", e);
             }
         }));
@@ -116,8 +117,9 @@ impl RecordingSession {
         let running = self.is_running.clone();
         let paused = self.is_paused.clone();
         let dir = self.recording_dir.clone();
+        let clock = self.clock.clone();
         handles.push(std::thread::spawn(move || {
-            if let Err(e) = super::ui_tracker::track_ui_events(running, paused, &dir) {
+            if let Err(e) = super::ui_tracker::track_ui_events(running, paused, &dir, clock) {
                 log::warn!("UI tracker error (non-fatal): {}", e);
             }
         }));
@@ -132,6 +134,9 @@ impl RecordingSession {
 
     pub fn stop(&self) -> Result<()> {
         self.is_running.store(false, Ordering::SeqCst);
+        // duration_ms は「実効録画時間」（一時停止時間を除いた時間）。フレーム・イベントの
+        // タイムスタンプと同じ時計で、スレッドの join 待ちを含まないよう停止直後に測る。
+        let duration_ms = self.clock.now_ms();
         log::info!("Recording stopped: {}", self.id);
 
         // Join all capture threads to ensure buffered frames/audio are flushed.
@@ -177,12 +182,6 @@ impl RecordingSession {
         log::info!("All recording threads joined (or timed out): {}", self.id);
 
         // Write metadata
-        // duration_ms は「実効録画時間」（一時停止時間を除いた時間）。
-        // これを使うことで、エクスポート時のフレームレート算出
-        // (frame_count * 1000 / duration_ms) が実際のキャプチャ fps と一致し、
-        // 長時間録画でも音声/映像/イベントのタイムスタンプがずれない。
-        let duration_ms = self.effective_duration_ms();
-
         // Read actual screen dimensions from capture thread output
         let (screen_width, screen_height) = self.read_dimensions();
 
@@ -210,7 +209,7 @@ impl RecordingSession {
             screen_width,
             screen_height,
             fps: self.fps,
-            start_time: chrono::Local::now().to_rfc3339(),
+            start_time: self.started_at.clone(),
             duration_ms,
             has_audio,
             monitor_scale: 1.0,
@@ -257,43 +256,16 @@ impl RecordingSession {
     }
 
     pub fn pause(&self) -> Result<()> {
-        // 既に pause 済みなら二重計上を避けるために Instant は上書きしない
-        if !self.is_paused.swap(true, Ordering::SeqCst) {
-            if let Ok(mut p) = self.pause_start.lock() {
-                *p = Some(std::time::Instant::now());
-            }
-        }
+        // 時計を先に止めてからフラグを立てる（停止中に付くタイムスタンプが進まないように）
+        self.clock.pause();
+        self.is_paused.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn resume(&self) -> Result<()> {
-        if self.is_paused.swap(false, Ordering::SeqCst) {
-            if let Ok(mut p) = self.pause_start.lock() {
-                if let Some(start) = p.take() {
-                    let delta = start.elapsed().as_millis() as u64;
-                    if let Ok(mut acc) = self.pause_accumulated_ms.lock() {
-                        *acc += delta;
-                    }
-                }
-            }
-        }
+        self.clock.resume();
+        self.is_paused.store(false, Ordering::SeqCst);
         Ok(())
-    }
-
-    /// start() からの経過時間のうち、一時停止していない実効録画時間（ms）を返す。
-    /// stop() 時に呼ぶとき、まだ pause 中であれば現在時点までの pause 時間も差し引く。
-    fn effective_duration_ms(&self) -> u64 {
-        let elapsed_ms = self.start_time.lock().unwrap()
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        let mut paused_ms = self.pause_accumulated_ms.lock().map(|g| *g).unwrap_or(0);
-        // まだ pause 中なら未確定の pause 時間も反映
-        if let Ok(guard) = self.pause_start.lock() {
-            if let Some(start) = *guard {
-                paused_ms += start.elapsed().as_millis() as u64;
-            }
-        }
-        elapsed_ms.saturating_sub(paused_ms)
     }
 }
 

@@ -84,13 +84,23 @@ SolidJS (src/lib/commands.ts)
 
 ```
 %USERPROFILE%\Videos\Snappi\recordings\{uuid}\
-├── frames/frame_00000001.png, ...
-├── events.jsonl
+├── frames/frame_00000000.jpg, ...   # 旧録画は .png
+├── frame_timestamps.txt  # 各フレームを取り込んだ瞬間の録画時刻 (ms)。1行1フレーム
+├── events.jsonl          # マウス/キー入力 + cursor_shape イベント（画面座標）
+├── ui_events.jsonl       # UI Automation のフォーカス要素矩形（画面座標）
+├── window_events.jsonl   # 前面ウィンドウの変化（ズーム計算には未使用）
+├── window_rects.jsonl    # ウィンドウ録画時のみ。矩形が変化したら {"t","rect":[l,t,r,b]}
 ├── audio.wav
-├── meta.json
-├── dimensions.txt
-└── frame_count.txt
+└── meta.json             # frame_count を含む（dimensions.txt / frame_count.txt は停止時に統合・削除）
 ```
+
+- タイムスタンプ `t` はすべて共有の `RecordingClock`（一時停止中は進まない）による録画開始からの ms。
+- `cursor_shape` イベント: `{"type":"cursor_shape","t":..,"shape":"ibeam"}`。shape は
+  `arrow` / `ibeam` / `hand` / `wait` / `size_ns` / `size_we` / `size_nwse` / `size_nesw` / `size_all` / `other`。
+- 録画データは必ず `recording_data::RecordingData` 経由で読む。イベント座標はここで
+  **キャプチャ領域基準（フレーム左上が原点）** に変換される（ウィンドウ録画は `window_rects.jsonl` の
+  各時刻の位置、範囲録画は範囲の左上を使用）。`frame_timestamps.txt` が無い旧録画は等間隔とみなす。
+- エクスポートはプリセットの fps で等間隔に出力し、出力時刻 t には「t 以前で最新の元フレーム」を使う。
 
 ## 主要な型定義
 

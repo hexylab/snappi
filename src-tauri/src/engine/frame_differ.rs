@@ -63,15 +63,17 @@ pub struct DiffResult {
 }
 
 /// Detect visual change regions across frames using parallel processing.
+///
+/// `frame_times` は各フレームの録画時刻 (ms)。要素数がフレーム数になる。
 pub fn detect_frame_changes(
     frames_dir: &Path,
-    frame_count: u64,
-    duration_ms: u64,
+    frame_times: &[u64],
     cursor_positions: &[(u64, f64, f64)],
     screen_w: u32,
     screen_h: u32,
     config: &DiffConfig,
 ) -> Result<DiffResult> {
+    let frame_count = frame_times.len() as u64;
     if frame_count < 2 {
         return Ok(DiffResult {
             regions: Vec::new(),
@@ -79,12 +81,6 @@ pub fn detect_frame_changes(
             pairs_excluded: 0,
         });
     }
-
-    let frame_time_step_ms = if frame_count > 1 && duration_ms > 0 {
-        duration_ms / frame_count
-    } else {
-        33
-    };
 
     // Generate sampling pairs
     let pairs: Vec<(u64, u64)> = (0..frame_count)
@@ -111,14 +107,14 @@ pub fn detect_frame_changes(
         .par_iter()
         .map(|(idx_a, idx_b)| {
             // 新録画は .jpg、旧録画は .png で保存されるため両方をチェック
-            let path_a = crate::export::encoder::recording_frame_path(frames_dir, *idx_a);
-            let path_b = crate::export::encoder::recording_frame_path(frames_dir, *idx_b);
+            let path_a = crate::recording_data::frame_path(frames_dir, *idx_a);
+            let path_b = crate::recording_data::frame_path(frames_dir, *idx_b);
 
             let img_a = load_downsampled_gray(&path_a, ds).ok()?;
             let img_b = load_downsampled_gray(&path_b, ds).ok()?;
 
-            let time_a = idx_a * frame_time_step_ms;
-            let time_b = idx_b * frame_time_step_ms;
+            let time_a = frame_times[*idx_a as usize];
+            let time_b = frame_times[*idx_b as usize];
             let cursor_a = find_cursor_nearest(cursor_positions, time_a);
             let cursor_b = find_cursor_nearest(cursor_positions, time_b);
 

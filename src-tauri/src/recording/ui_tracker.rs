@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use super::clock::RecordingClock;
+
 /// Track UI Automation focus change events and write them to ui_events.jsonl.
 /// Runs on a dedicated STA thread (required for COM UI Automation).
 /// If UI Automation is unavailable, this function returns without error.
@@ -10,15 +12,16 @@ pub fn track_ui_events(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        track_ui_events_windows(is_running, is_paused, output_dir)
+        track_ui_events_windows(is_running, is_paused, output_dir, clock)
     }
 
     #[cfg(not(windows))]
     {
-        let _ = (is_running, is_paused, output_dir);
+        let _ = (is_running, is_paused, output_dir, clock);
         Ok(())
     }
 }
@@ -28,6 +31,7 @@ fn track_ui_events_windows(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
+    clock: Arc<RecordingClock>,
 ) -> Result<()> {
     use std::io::Write;
     use windows::Win32::System::Com::*;
@@ -42,7 +46,6 @@ fn track_ui_events_windows(
             .append(true)
             .open(&events_path)?,
     );
-    let start_time = std::time::Instant::now();
 
     // Initialize COM in STA mode (required for UI Automation event handlers)
     unsafe {
@@ -77,7 +80,7 @@ fn track_ui_events_windows(
             continue;
         }
 
-        let elapsed_ms = start_time.elapsed().as_millis() as u64;
+        let elapsed_ms = clock.now_ms();
 
         // Debounce: skip if too soon
         if elapsed_ms.saturating_sub(last_event_ms) < debounce_ms {
