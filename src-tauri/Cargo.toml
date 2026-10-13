@@ -85,3 +85,12 @@ optional = true
 
 [features]
 ts-export = ["ts-rs"]
+
+# 開発ビルド（npm run tauri dev）でも録画のフレームレートを保つため、依存クレート（JPEG エンコーダ等）は
+# 最適化してビルドし、自分のクレートも軽く最適化する（JPEG エンコーダはジェネリックなので
+# 呼び出し側のクレートでコンパイルされる）(Issue #39)
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -2,7 +2,7 @@
 """評価シナリオの合成録画データを testdata/recordings/ に生成する (Issue #28)。
 
 Windows 実機で録画したデータに置き換えるまでの暫定データ。実録画と同じ形式
-（meta.json / events.jsonl / ui_events.jsonl / window_rects.jsonl）で、frames は含まない。
+（meta.json / events.jsonl / ui_events.jsonl / window_rects.jsonl / changes.jsonl）で、frames は含まない。
 各シナリオの expect.json もここで生成する。
 
     python3 testdata/gen_synthetic.py [シナリオ名 ...]
@@ -28,6 +28,8 @@ class Rec:
         self.events = []
         self.ui_events = []
         self.window_rects = []
+        # 画面の変化領域 (Issue #39)。キャプチャ領域基準
+        self.changes = []
         self.pos = start_pos
         self.rng = random.Random(28)
 
@@ -75,6 +77,14 @@ class Rec:
         self.ev(type="key", t=t, key=key, modifiers=list(modifiers))
         return t
 
+    def typed_line(self, t0, t1, x, y, char_w=24, interval=200):
+        """t0〜t1 の入力で、(x, y) から右へ伸びていく入力行の変化領域を interval ごとに記録する"""
+        t = t0 + interval
+        while t <= t1 + interval:
+            n = (t - t0) // interval
+            self.changes.append({"t": t, "rects": [[x, y - 16, x + char_w * (n + 1), y + 16, 2 * (n + 1)]]})
+            t += interval
+
     def scroll(self, t, dy=-1.0):
         x, y = self.pos
         self.ev(type="scroll", t=t, x=x, y=y, dx=0.0, dy=dy)
@@ -103,7 +113,11 @@ class Rec:
         }
         write_text(d / "meta.json", json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
         write_jsonl(d / "events.jsonl", sorted(self.events, key=lambda e: e["t"]))
-        for fname, rows in (("ui_events.jsonl", self.ui_events), ("window_rects.jsonl", self.window_rects)):
+        for fname, rows in (
+            ("ui_events.jsonl", self.ui_events),
+            ("window_rects.jsonl", self.window_rects),
+            ("changes.jsonl", self.changes),
+        ):
             if rows:
                 write_jsonl(d / fname, sorted(rows, key=lambda e: e["t"]))
             elif (d / fname).exists():
@@ -258,9 +272,13 @@ def window_mode():
     # 移動後のウィンドウ内 (400, 200) をクリックして入力
     t = r.click(t0 + steps * 100 + 800, (left + 400, top + 200))
     end = r.type(t + 300, 15)
+    # 入力行の変化（キャプチャ領域基準。1回目は (300, 300)、2回目は (400, 200) から右へ）
+    r.typed_line(1800, 1800 + 15 * 150, 300, 300)
+    r.typed_line(t + 300, end, 400, 200)
     r.write("window-mode", 20000, "ウィンドウモードでの録画（録画中にウィンドウを移動）", [
         {"kind": "visible", "t_ms": t, "x": 400, "y": 200},
         {"kind": "zoomed_in", "from_ms": t + 500, "to_ms": end, "min_ratio": 0.9},
+        {"kind": "framed", "from_ms": t + 500, "to_ms": end, "rect": [400, 184, 760, 216], "min_ratio": 0.9},
         {"kind": "zoomed_out", "from_ms": end + 4000, "to_ms": 18000},
     ], mode="window", window_rect=[200, 100, 1480, 900])
 

@@ -8,7 +8,9 @@
 //!   動かしても座標がずれない。
 //! - フレーム時刻は frame_timestamps.txt の実測値を使い、無い旧形式の録画では等間隔とみなす。
 
+use crate::changes::FrameChange;
 use crate::recording::capture::{FRAME_TIMESTAMPS_FILE, WINDOW_RECTS_FILE};
+use crate::recording::focus::WINDOW_EVENTS_FILE;
 use crate::config::{RecordingEvent, RecordingMeta};
 use anyhow::Result;
 use serde::Deserialize;
@@ -67,6 +69,8 @@ pub struct RecordingData {
     pub events: Vec<RecordingEvent>,
     /// 各フレームの録画時刻 (ms)。要素数はフレーム数と一致する。
     pub frame_times: Vec<u64>,
+    /// 画面の変化領域（changes.jsonl、時刻順・キャプチャ領域基準）。無い録画は空。
+    pub changes: Vec<FrameChange>,
 }
 
 impl RecordingData {
@@ -89,6 +93,7 @@ impl RecordingData {
 
         let mut events = read_jsonl::<RecordingEvent>(&dir.join("events.jsonl"));
         events.extend(read_jsonl::<RecordingEvent>(&dir.join("ui_events.jsonl")));
+        events.extend(read_jsonl::<RecordingEvent>(&dir.join(WINDOW_EVENTS_FILE)));
         events.sort_by_key(RecordingEvent::timestamp);
 
         let origins = capture_origins(dir, &meta);
@@ -99,7 +104,21 @@ impl RecordingData {
             meta,
             events,
             frame_times,
+            changes: crate::changes::load(dir),
         })
+    }
+
+    /// changes.jsonl が無く frames がある録画（旧録画）なら、frames から作って読み込む (Issue #39)。
+    /// 失敗しても録画は使えるので、警告だけ出して変化領域なしで続ける。
+    pub fn ensure_changes(&mut self) {
+        if !self.changes.is_empty() || self.dir.join(crate::changes::CHANGES_FILE).exists() {
+            return;
+        }
+        match crate::changes::ensure(&self.dir) {
+            Ok(true) => self.changes = crate::changes::load(&self.dir),
+            Ok(false) => {}
+            Err(e) => log::warn!("changes.jsonl を作れません {}: {:#}", self.dir.display(), e),
+        }
     }
 
     pub fn width(&self) -> u32 {

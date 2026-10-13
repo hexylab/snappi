@@ -1,16 +1,17 @@
-//! カメラ（ズーム・パン）エンジン (Issue #28, #29)。仕様は `docs/camera-spec-v5.md`。
+//! カメラ（ズーム・パン）エンジン (Issue #28, #29, #39)。仕様は `docs/camera-spec-v6.md`。
 //!
-//! データの流れ: イベント → `auto_segments`（ZoomSegment 列）→ `camera_track`（各出力フレームの
-//! `CameraState`）→ 合成。評価 (`crate::eval`) は `CameraTrack` を検証する。
+//! データの流れ: イベント・画面の変化領域 → `subject`（操作ごとの主役）→ `auto_segments`（ショット =
+//! ZoomSegment 列）→ `camera_track`（各出力フレームの `CameraState`）→ 合成。評価 (`crate::eval`) は `CameraTrack` を検証する。
 //! 座標はすべてキャプチャ領域基準（フレーム左上が原点）の px。
 
 pub mod config;
 pub mod segments;
 pub mod spec;
+pub mod subject;
 pub mod track;
 
 pub use config::{CameraConfig, ZoomStrength};
-pub use segments::{auto_segments, FocusMode, ZoomSegment};
+pub use segments::{auto_segments, plan, FocusMode, Shot, ZoomSegment};
 pub use track::camera_track;
 
 use crate::config::RecordingEvent;

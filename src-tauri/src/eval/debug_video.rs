@@ -1,13 +1,14 @@
 //! カメラの動きを確認するデバッグ動画 (Issue #28)。
 //!
 //! 元フレーム全体に次を描き込み、下端に区間タイムラインを付けて MP4 にする。
-//! - ビューポート矩形（寄っている間は緑、全体表示は灰）と、寄っている間のデッドゾーン（黄）
+//! - ビューポート矩形（寄っている間は緑、全体表示は灰）
 //! - カーソル（赤い点）
 //! - クリック（水色の広がる輪）、スクロール（橙の輪）、キー入力（カーソル横の紫の四角）
+//! - 画面の変化領域（桃色の細枠, Issue #39）と、いまのショットの主役（水色の細枠）
 //! - タイムライン: 寄っている区間（緑）、アクティビティ（白=クリック / 紫=キー / 橙=スクロール / 水色=ドラッグ）、
 //!   R5 で無視する録画冒頭・末尾（暗い赤）、現在時刻（赤い縦線）
 
-use crate::camera::{self, spec, ActivityKind, CameraTrack, Viewport};
+use crate::camera::{self, spec, ActivityKind, CameraConfig, CameraTrack, Viewport};
 use crate::config::RecordingEvent;
 use crate::eval::metrics::zoomed_runs;
 use crate::recording_data::RecordingData;
@@ -25,12 +26,14 @@ const KEY_MARK_MS: u64 = 300;
 
 const GREEN: Rgb<u8> = Rgb([40, 220, 90]);
 const GRAY: Rgb<u8> = Rgb([160, 160, 160]);
-const YELLOW: Rgb<u8> = Rgb([250, 210, 40]);
 const RED: Rgb<u8> = Rgb([240, 40, 40]);
 const CYAN: Rgb<u8> = Rgb([40, 200, 240]);
 const ORANGE: Rgb<u8> = Rgb([250, 140, 30]);
 const MAGENTA: Rgb<u8> = Rgb([210, 60, 220]);
 const WHITE: Rgb<u8> = Rgb([255, 255, 255]);
+const PINK: Rgb<u8> = Rgb([255, 110, 180]);
+/// 変化領域を表示する時間 (ms)
+const CHANGE_MS: u64 = 600;
 const TIMELINE_BG: Rgb<u8> = Rgb([30, 30, 30]);
 const GUARD_BG: Rgb<u8> = Rgb([70, 25, 25]);
 
@@ -63,6 +66,7 @@ pub fn render(data: &RecordingData, track: &CameraTrack, output: &Path) -> Resul
     let mut stdin = child.stdin.take().expect("stdin is piped");
 
     let (w, h) = (data.width() as f64, data.height() as f64);
+    let shots = camera::plan(data, &CameraConfig::default());
     let mut current: Option<(u64, RgbImage)> = Some((0, first));
     for (k, state) in track.frames.iter().enumerate() {
         let t = track.time_ms(k);
@@ -80,12 +84,22 @@ pub fn render(data: &RecordingData, track: &CameraTrack, output: &Path) -> Resul
         let frame_h = out_h - timeline.height();
         image::imageops::replace(&mut canvas, &timeline, 0, frame_h as i64);
 
+        // 変化領域（直近の変化したフレーム）と、いまのショットの主役
+        let ci = data.changes.partition_point(|c| c.t <= t);
+        if let Some(c) = ci.checked_sub(1).map(|i| &data.changes[i]).filter(|c| c.t + CHANGE_MS > t) {
+            for r in &c.rects {
+                let r = r.rect;
+                stroke_rect(&mut canvas, scale_rect(Viewport { x: r.l, y: r.t, width: r.width(), height: r.height() }, scale), 1.0, PINK);
+            }
+        }
+        if let Some(s) = shots.iter().find(|s| s.start <= t && t < s.end) {
+            let r = s.subject.inflate(2.0);
+            stroke_rect(&mut canvas, scale_rect(Viewport { x: r.l, y: r.t, width: r.width(), height: r.height() }, scale), 2.0, CYAN);
+        }
+
         // ビューポートとデッドゾーン
         let vp = scale_rect(state.viewport(w, h), scale);
         let zoomed = state.zoom >= spec::ZOOMED_THRESHOLD;
-        if zoomed {
-            stroke_rect(&mut canvas, vp.scaled(spec::DEAD_ZONE_RATIO), 1.0, YELLOW);
-        }
         stroke_rect(&mut canvas, vp, 3.0, if zoomed { GREEN } else { GRAY });
 
         // イベント

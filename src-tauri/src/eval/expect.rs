@@ -12,7 +12,7 @@
 //! }
 //! ```
 
-use crate::camera::{extract_activities, group_activities, spec, ActivityKind, CameraTrack};
+use crate::camera::{extract_activities, group_activities, spec, ActivityKind, CameraTrack, Viewport};
 use crate::eval::metrics::zoom_switches;
 use crate::recording_data::RecordingData;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,26 @@ pub enum Check {
     Visible { t_ms: u64, x: f64, y: f64 },
     /// 録画全体での寄る/引くの切り替え回数の上限
     MaxSwitches { max: usize },
+    /// `[from_ms, to_ms]` の間、主役の矩形 `rect` = `[l, t, r, b]` がビューポートに収まっていること (Issue #39)
+    Framed {
+        from_ms: u64,
+        to_ms: u64,
+        rect: [f64; 4],
+        #[serde(default = "default_ratio")]
+        min_ratio: f64,
+    },
+    /// `[from_ms, to_ms]` の間、ビューポートが矩形 `rect`（操作中のウィンドウ）の中に収まっていること (Issue #39)
+    Within {
+        from_ms: u64,
+        to_ms: u64,
+        rect: [f64; 4],
+        #[serde(default = "default_ratio")]
+        min_ratio: f64,
+    },
 }
+
+/// framed / within で許す誤差 (px)
+const RECT_TOLERANCE_PX: f64 = 4.0;
 
 fn default_ratio() -> f64 {
     1.0
@@ -190,6 +209,30 @@ impl Check {
                 let switches = zoom_switches(track);
                 (format!("切り替え {} 回 (基準 <= {})", switches, max), switches <= max)
             }
+            Check::Framed { from_ms, to_ms, rect, min_ratio } => {
+                let r = frame_ratio(track, from_ms, to_ms, |vp| {
+                    vp.x - RECT_TOLERANCE_PX <= rect[0]
+                        && vp.y - RECT_TOLERANCE_PX <= rect[1]
+                        && vp.x + vp.width + RECT_TOLERANCE_PX >= rect[2]
+                        && vp.y + vp.height + RECT_TOLERANCE_PX >= rect[3]
+                }, width, height);
+                (
+                    format!("{}〜{}ms 主役 {:?} が枠内 {} (基準 >= {:.0}%)", from_ms, to_ms, rect, fmt_ratio(r), min_ratio * 100.0),
+                    r.is_some_and(|r| r >= min_ratio),
+                )
+            }
+            Check::Within { from_ms, to_ms, rect, min_ratio } => {
+                let r = frame_ratio(track, from_ms, to_ms, |vp| {
+                    vp.x + RECT_TOLERANCE_PX >= rect[0]
+                        && vp.y + RECT_TOLERANCE_PX >= rect[1]
+                        && vp.x + vp.width - RECT_TOLERANCE_PX <= rect[2]
+                        && vp.y + vp.height - RECT_TOLERANCE_PX <= rect[3]
+                }, width, height);
+                (
+                    format!("{}〜{}ms 枠がウィンドウ {:?} の中 {} (基準 >= {:.0}%)", from_ms, to_ms, rect, fmt_ratio(r), min_ratio * 100.0),
+                    r.is_some_and(|r| r >= min_ratio),
+                )
+            }
         };
         CheckResult { description, passed }
     }
@@ -202,6 +245,22 @@ fn zoomed_ratio(track: &CameraTrack, from_ms: u64, to_ms: u64) -> Option<f64> {
         .map(|k| track.frames[k].zoom >= spec::ZOOMED_THRESHOLD)
         .collect();
     (!zooms.is_empty()).then(|| zooms.iter().filter(|&&z| z).count() as f64 / zooms.len() as f64)
+}
+
+/// `[from_ms, to_ms]` のフレームのうち、ビューポートが `pred` を満たす割合。該当フレームが無ければ None。
+fn frame_ratio(
+    track: &CameraTrack,
+    from_ms: u64,
+    to_ms: u64,
+    pred: impl Fn(&Viewport) -> bool,
+    width: f64,
+    height: f64,
+) -> Option<f64> {
+    let hits: Vec<bool> = (0..track.frames.len())
+        .filter(|&k| (from_ms..=to_ms).contains(&track.time_ms(k)))
+        .map(|k| pred(&track.frames[k].viewport(width, height)))
+        .collect();
+    (!hits.is_empty()).then(|| hits.iter().filter(|&&h| h).count() as f64 / hits.len() as f64)
 }
 
 fn fmt_ratio(r: Option<f64>) -> String {
@@ -230,12 +289,17 @@ mod tests {
                 {"kind":"zoomed_in","from_ms":500,"to_ms":1900,"min_ratio":0.9},
                 {"kind":"visible","t_ms":1500,"x":190,"y":50},
                 {"kind":"visible","t_ms":500,"x":190,"y":50},
-                {"kind":"max_switches","max":1}
+                {"kind":"max_switches","max":1},
+                {"kind":"framed","from_ms":1000,"to_ms":1900,"rect":[60,30,140,70]},
+                {"kind":"framed","from_ms":1000,"to_ms":1900,"rect":[10,30,140,70]},
+                {"kind":"within","from_ms":1000,"to_ms":1900,"rect":[40,20,160,80]},
+                {"kind":"within","from_ms":0,"to_ms":1900,"rect":[40,20,160,80],"min_ratio":0.5}
             ]}"#,
         )
         .unwrap();
         let passed: Vec<bool> = exp.evaluate(&track, 200.0, 100.0).iter().map(|r| r.passed).collect();
-        assert_eq!(passed, vec![true, true, false, false, true, false]);
+        // 寄っている間のビューポートは [50, 25, 150, 75]
+        assert_eq!(passed, vec![true, true, false, false, true, false, true, false, true, true]);
     }
 
     fn testdata(name: &str) -> RecordingData {
