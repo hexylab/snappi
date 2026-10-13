@@ -12,14 +12,20 @@
 //! }
 //! ```
 
-use crate::camera::{spec, CameraTrack};
+use crate::camera::{extract_activities, group_activities, spec, ActivityKind, CameraTrack};
 use crate::eval::metrics::zoom_switches;
-use serde::Deserialize;
+use crate::recording_data::RecordingData;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const EXPECT_FILE: &str = "expect.json";
 
-#[derive(Debug, Clone, Deserialize)]
+/// 下書きの期待時間帯に持たせる余裕 (ms)。遷移の終わり際・始まり際をチェックから外す
+const DRAFT_MARGIN_MS: u64 = 500;
+/// 下書きで zoomed_in / zoomed_out を置く時間帯の最短長 (ms)
+const DRAFT_MIN_SPAN_MS: u64 = 1000;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Expectation {
     #[serde(default)]
     pub description: String,
@@ -27,7 +33,7 @@ pub struct Expectation {
     pub checks: Vec<Check>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Check {
     /// `[from_ms, to_ms]` の間、全体表示（寄っていない）であること
@@ -75,6 +81,85 @@ impl Expectation {
             .iter()
             .map(|c| c.evaluate(track, width, height))
             .collect()
+    }
+
+    /// 実録画を評価データに取り込むときの expect.json の下書きを、仕様 R1〜R5 から作る。
+    ///
+    /// - クリックごとに、その位置が写っていること（visible）
+    /// - 区間の最初から最後のアクティビティまで寄っていること（zoomed_in, 90%）
+    /// - 区間の外で、遷移の余裕を除いた時間帯は全体表示であること（zoomed_out）
+    /// - 切り替え回数が区間数の2倍以下であること（max_switches）
+    ///
+    /// F5 の「引いてから寄り直す」を許すため、ビューポート幅の `FAR_JUMP_VIEWPORTS` 倍以上
+    /// 離れた移動を含む区間には zoomed_in を置かず、そうした録画には max_switches も置かない。
+    /// シナリオ固有の意図は人が確認して書き足すこと。
+    pub fn draft(data: &RecordingData, description: &str) -> Self {
+        let (w, h) = (data.width() as f64, data.height() as f64);
+        let duration = data.meta.duration_ms;
+        let activities = extract_activities(&data.events, duration);
+        let far_jump = w / spec::ZOOM_STANDARD * spec::FAR_JUMP_VIEWPORTS;
+
+        // R3/R4 に従って区間 [start, end] を作り、隙間が MIN_GAP 未満なら結合する
+        let mut segments: Vec<DraftSegment> = Vec::new();
+        for (first, last) in group_activities(&activities, spec::MERGE_GAP_MS) {
+            let start = first.saturating_sub(spec::LEAD_MS);
+            let end = (last + spec::HOLD_MS).max(start + spec::MIN_SEGMENT_MS).min(duration);
+            match segments.last_mut() {
+                Some(prev) if start < prev.end + spec::MIN_GAP_MS => {
+                    prev.end = prev.end.max(end);
+                    prev.last = last;
+                }
+                _ => segments.push(DraftSegment { start, end, first, last, has_far_jump: false }),
+            }
+        }
+        for seg in &mut segments {
+            let positions: Vec<(f64, f64)> = activities
+                .iter()
+                .filter(|a| (seg.first..=seg.last).contains(&a.t))
+                .filter_map(|a| a.pos)
+                .collect();
+            seg.has_far_jump = positions
+                .windows(2)
+                .any(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1) >= far_jump);
+        }
+
+        let mut checks = Vec::new();
+        for a in activities.iter().filter(|a| a.kind == ActivityKind::Click) {
+            if let Some((x, y)) = a.pos.filter(|&(x, y)| (0.0..=w).contains(&x) && (0.0..=h).contains(&y)) {
+                checks.push(Check::Visible { t_ms: a.t, x: x.round(), y: y.round() });
+            }
+        }
+        for seg in segments.iter().filter(|s| !s.has_far_jump) {
+            if seg.last >= seg.first + DRAFT_MIN_SPAN_MS {
+                checks.push(Check::ZoomedIn { from_ms: seg.first, to_ms: seg.last, min_ratio: 0.9 });
+            }
+        }
+        // 区間の外（録画冒頭・区間の間・末尾）は全体表示
+        let mut out_from = 0;
+        for seg in &segments {
+            push_zoomed_out(&mut checks, out_from, seg.start.saturating_sub(DRAFT_MARGIN_MS));
+            out_from = seg.end + spec::ZOOM_OUT_MS + DRAFT_MARGIN_MS;
+        }
+        push_zoomed_out(&mut checks, out_from, duration.saturating_sub(spec::END_GUARD_MS));
+        if !segments.iter().any(|s| s.has_far_jump) {
+            checks.push(Check::MaxSwitches { max: segments.len() * 2 });
+        }
+
+        Self { description: description.to_string(), checks }
+    }
+}
+
+struct DraftSegment {
+    start: u64,
+    end: u64,
+    first: u64,
+    last: u64,
+    has_far_jump: bool,
+}
+
+fn push_zoomed_out(checks: &mut Vec<Check>, from_ms: u64, to_ms: u64) {
+    if to_ms >= from_ms + DRAFT_MIN_SPAN_MS {
+        checks.push(Check::ZoomedOut { from_ms, to_ms, min_ratio: 1.0 });
     }
 }
 
@@ -151,5 +236,41 @@ mod tests {
         .unwrap();
         let passed: Vec<bool> = exp.evaluate(&track, 200.0, 100.0).iter().map(|r| r.passed).collect();
         assert_eq!(passed, vec![true, true, false, false, true, false]);
+    }
+
+    fn testdata(name: &str) -> RecordingData {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/recordings").join(name);
+        RecordingData::load(&dir).unwrap()
+    }
+
+    #[test]
+    fn test_draft_idle_gaps() {
+        // クリック+入力 → 10秒放置 → クリック+入力。2区間・間は全体表示
+        let exp = Expectation::draft(&testdata("idle-gaps"), "idle");
+        assert_eq!(exp.description, "idle");
+        let zoomed_in = exp.checks.iter().filter(|c| matches!(c, Check::ZoomedIn { .. })).count();
+        assert_eq!(zoomed_in, 2);
+        assert!(exp.checks.iter().any(|c| matches!(c, Check::MaxSwitches { max: 4 })));
+        let gap_out = exp.checks.iter().any(|c| {
+            matches!(*c, Check::ZoomedOut { from_ms, to_ms, .. } if to_ms - from_ms >= 5000 && from_ms > 3000)
+        });
+        assert!(gap_out, "放置中の zoomed_out がない: {:?}", exp.checks);
+        let visible = exp.checks.iter().filter(|c| matches!(c, Check::Visible { .. })).count();
+        assert_eq!(visible, 2);
+    }
+
+    #[test]
+    fn test_draft_far_jumps_skips_zoomed_in_and_switch_limit() {
+        let exp = Expectation::draft(&testdata("far-jumps"), "");
+        assert!(!exp.checks.iter().any(|c| matches!(c, Check::ZoomedIn { .. } | Check::MaxSwitches { .. })));
+        let visible = exp.checks.iter().filter(|c| matches!(c, Check::Visible { .. })).count();
+        assert_eq!(visible, 6);
+    }
+
+    #[test]
+    fn test_draft_round_trips_as_json() {
+        let exp = Expectation::draft(&testdata("vscode-typing"), "typing");
+        let back: Expectation = serde_json::from_str(&serde_json::to_string(&exp).unwrap()).unwrap();
+        assert_eq!(back.checks.len(), exp.checks.len());
     }
 }

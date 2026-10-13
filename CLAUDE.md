@@ -41,7 +41,12 @@ cargo run --bin snappi-eval -- ../testdata/recordings/vscode-typing --metrics
 cargo run --release --bin snappi-eval -- <recording_dir> --debug-video out.mp4
 # 全シナリオに仕様を適用（新エンジン #29 完成までは ignore）
 cargo test --test camera_eval -- --ignored --nocapture
+# 全シナリオのメトリクスを Markdown の表で出力（仕様書 §9 のベースライン更新用）
+cargo run -q --bin snappi-eval -- ../testdata/recordings --table
 ```
+
+- 実録画を評価シナリオに取り込むときは `python testdata/import_recording.py latest <シナリオ名>`
+  （frames/audio を除いてコピーし、`--draft-expect` で expect.json の下書きを作る）。手順は `testdata/recordings/README.md`。
 
 - 評価するエンジンは `eval::compute_track` で切り替える（現在は旧エンジン `legacy_camera_track`）。
 - 仕様パラメータは `camera/spec.rs`、メトリクスは `eval/metrics.rs`。値を変えたら仕様書も更新する。
