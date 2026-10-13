@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "id": "synthetic-vscode-typing",
+  "id": "1b0aa362-21fc-4543-898c-6d0bb3875403",
   "screen_width": 1920,
   "screen_height": 1080,
-  "fps": 30,
-  "start_time": "2026-10-13T12:00:00+09:00",
-  "duration_ms": 20000,
+  "fps": 60,
+  "start_time": "2026-10-13T21:56:27.735261100+09:00",
+  "duration_ms": 17069,
   "has_audio": false,
   "monitor_scale": 1.0,
   "recording_dir": "",
   "recording_mode": "display",
   "window_title": null,
   "window_initial_rect": null,
-  "frame_count": 600
+  "frame_count": 31
 }

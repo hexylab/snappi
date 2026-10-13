@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "id": "synthetic-terminal",
+  "id": "7f5e6182-06fa-48a7-a180-fdc3fe69fa59",
   "screen_width": 1920,
   "screen_height": 1080,
-  "fps": 30,
-  "start_time": "2026-10-13T12:00:00+09:00",
-  "duration_ms": 18000,
+  "fps": 60,
+  "start_time": "2026-10-13T21:57:22.792806300+09:00",
+  "duration_ms": 7552,
   "has_audio": false,
   "monitor_scale": 1.0,
   "recording_dir": "",
   "recording_mode": "display",
   "window_title": null,
   "window_initial_rect": null,
-  "frame_count": 540
+  "frame_count": 14
 }

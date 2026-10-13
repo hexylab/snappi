@@ -1,21 +1,63 @@
 {
   "description": "アプリのメニューとダイアログを操作する",
-  "synthetic": true,
   "checks": [
     {
       "kind": "visible",
-      "t_ms": 1800,
-      "x": 40,
-      "y": 15
+      "t_ms": 3503,
+      "x": 874.0,
+      "y": 341.0
     },
     {
-      "kind": "max_switches",
-      "max": 2
+      "kind": "visible",
+      "t_ms": 4212,
+      "x": 629.0,
+      "y": 146.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 7967,
+      "x": 652.0,
+      "y": 380.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 13847,
+      "x": 780.0,
+      "y": 477.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 14270,
+      "x": 786.0,
+      "y": 488.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 14782,
+      "x": 787.0,
+      "y": 485.0
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 13847,
+      "to_ms": 19485,
+      "min_ratio": 0.9
     },
     {
       "kind": "zoomed_out",
-      "from_ms": 12428,
-      "to_ms": 18000
+      "from_ms": 0,
+      "to_ms": 2403,
+      "min_ratio": 1.0
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 10667,
+      "to_ms": 12747,
+      "min_ratio": 1.0
+    },
+    {
+      "kind": "max_switches",
+      "max": 6
     }
   ]
 }

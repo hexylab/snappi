@@ -1,141 +1,195 @@
-{"type": "key", "t": 150, "key": "Character", "modifiers": ["Ctrl", "Shift"]}
-{"type": "mouse_move", "t": 1516, "x": 1498, "y": 898}
-{"type": "mouse_move", "t": 1532, "x": 1490, "y": 894}
-{"type": "mouse_move", "t": 1548, "x": 1479, "y": 887}
-{"type": "mouse_move", "t": 1564, "x": 1463, "y": 877}
-{"type": "mouse_move", "t": 1580, "x": 1444, "y": 865}
-{"type": "mouse_move", "t": 1596, "x": 1422, "y": 851}
-{"type": "mouse_move", "t": 1612, "x": 1396, "y": 835}
-{"type": "mouse_move", "t": 1628, "x": 1368, "y": 817}
-{"type": "mouse_move", "t": 1644, "x": 1337, "y": 798}
-{"type": "mouse_move", "t": 1660, "x": 1304, "y": 777}
-{"type": "mouse_move", "t": 1676, "x": 1269, "y": 756}
-{"type": "mouse_move", "t": 1692, "x": 1233, "y": 733}
-{"type": "mouse_move", "t": 1708, "x": 1196, "y": 710}
-{"type": "mouse_move", "t": 1724, "x": 1158, "y": 686}
-{"type": "mouse_move", "t": 1740, "x": 1119, "y": 662}
-{"type": "mouse_move", "t": 1756, "x": 1081, "y": 638}
-{"type": "mouse_move", "t": 1772, "x": 1042, "y": 614}
-{"type": "mouse_move", "t": 1788, "x": 1004, "y": 590}
-{"type": "mouse_move", "t": 1804, "x": 967, "y": 567}
-{"type": "mouse_move", "t": 1820, "x": 931, "y": 544}
-{"type": "mouse_move", "t": 1836, "x": 896, "y": 523}
-{"type": "mouse_move", "t": 1852, "x": 863, "y": 502}
-{"type": "mouse_move", "t": 1868, "x": 832, "y": 483}
-{"type": "mouse_move", "t": 1884, "x": 804, "y": 465}
-{"type": "mouse_move", "t": 1900, "x": 778, "y": 449}
-{"type": "cursor_shape", "t": 1900, "shape": "ibeam"}
-{"type": "mouse_move", "t": 1916, "x": 756, "y": 435}
-{"type": "mouse_move", "t": 1932, "x": 737, "y": 423}
-{"type": "mouse_move", "t": 1948, "x": 721, "y": 413}
-{"type": "mouse_move", "t": 1964, "x": 710, "y": 406}
-{"type": "mouse_move", "t": 1980, "x": 702, "y": 402}
-{"type": "mouse_move", "t": 1996, "x": 700, "y": 400}
-{"type": "click", "t": 2116, "btn": "left", "x": 700, "y": 400}
-{"type": "click_release", "t": 2196, "btn": "left", "x": 700, "y": 400}
-{"type": "key", "t": 2500, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2624, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2750, "key": "Character", "modifiers": []}
-{"type": "key", "t": 2929, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3115, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3247, "key": "Space", "modifiers": []}
-{"type": "key", "t": 3385, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3511, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3680, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3843, "key": "Character", "modifiers": []}
-{"type": "key", "t": 3979, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4116, "key": "Space", "modifiers": []}
-{"type": "key", "t": 4244, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4404, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4534, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4660, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4847, "key": "Character", "modifiers": []}
-{"type": "key", "t": 4981, "key": "Space", "modifiers": []}
-{"type": "key", "t": 5116, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5229, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5391, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5531, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5649, "key": "Character", "modifiers": []}
-{"type": "key", "t": 5771, "key": "Space", "modifiers": []}
-{"type": "key", "t": 5934, "key": "Character", "modifiers": []}
-{"type": "key", "t": 6084, "key": "Character", "modifiers": []}
-{"type": "key", "t": 6210, "key": "Character", "modifiers": []}
-{"type": "key", "t": 6342, "key": "Character", "modifiers": []}
-{"type": "key", "t": 6516, "key": "Character", "modifiers": []}
-{"type": "key", "t": 6692, "key": "Space", "modifiers": []}
-{"type": "key", "t": 6836, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7024, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7163, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7330, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7456, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7591, "key": "Space", "modifiers": []}
-{"type": "key", "t": 7702, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7848, "key": "Character", "modifiers": []}
-{"type": "key", "t": 7991, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8111, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8287, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8465, "key": "Space", "modifiers": []}
-{"type": "key", "t": 8610, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8735, "key": "Character", "modifiers": []}
-{"type": "key", "t": 8918, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9381, "key": "Return", "modifiers": []}
-{"type": "key", "t": 9681, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9812, "key": "Character", "modifiers": []}
-{"type": "key", "t": 9947, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10104, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10222, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10336, "key": "Space", "modifiers": []}
-{"type": "key", "t": 10500, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10672, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10829, "key": "Character", "modifiers": []}
-{"type": "key", "t": 10959, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11117, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11259, "key": "Space", "modifiers": []}
-{"type": "key", "t": 11418, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11592, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11724, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11863, "key": "Character", "modifiers": []}
-{"type": "key", "t": 11995, "key": "Character", "modifiers": []}
-{"type": "mouse_move", "t": 12016, "x": 701, "y": 400}
-{"type": "mouse_move", "t": 12032, "x": 704, "y": 402}
-{"type": "mouse_move", "t": 12048, "x": 709, "y": 404}
-{"type": "mouse_move", "t": 12064, "x": 716, "y": 407}
-{"type": "mouse_move", "t": 12080, "x": 725, "y": 410}
-{"type": "mouse_move", "t": 12096, "x": 735, "y": 414}
-{"type": "mouse_move", "t": 12112, "x": 747, "y": 419}
-{"type": "mouse_move", "t": 12128, "x": 760, "y": 424}
-{"type": "key", "t": 12144, "key": "Space", "modifiers": []}
-{"type": "mouse_move", "t": 12144, "x": 774, "y": 430}
-{"type": "mouse_move", "t": 12160, "x": 790, "y": 436}
-{"type": "mouse_move", "t": 12176, "x": 806, "y": 443}
-{"type": "mouse_move", "t": 12192, "x": 824, "y": 449}
-{"type": "mouse_move", "t": 12208, "x": 842, "y": 457}
-{"type": "mouse_move", "t": 12224, "x": 861, "y": 464}
-{"type": "mouse_move", "t": 12240, "x": 880, "y": 472}
-{"type": "mouse_move", "t": 12256, "x": 900, "y": 480}
-{"type": "mouse_move", "t": 12272, "x": 920, "y": 488}
-{"type": "mouse_move", "t": 12288, "x": 940, "y": 496}
-{"type": "cursor_shape", "t": 12300, "shape": "arrow"}
-{"type": "mouse_move", "t": 12304, "x": 960, "y": 504}
-{"type": "mouse_move", "t": 12320, "x": 980, "y": 512}
-{"type": "key", "t": 12329, "key": "Character", "modifiers": []}
-{"type": "mouse_move", "t": 12336, "x": 1000, "y": 520}
-{"type": "mouse_move", "t": 12352, "x": 1020, "y": 528}
-{"type": "mouse_move", "t": 12368, "x": 1039, "y": 536}
-{"type": "mouse_move", "t": 12384, "x": 1058, "y": 543}
-{"type": "mouse_move", "t": 12400, "x": 1076, "y": 551}
-{"type": "mouse_move", "t": 12416, "x": 1094, "y": 557}
-{"type": "mouse_move", "t": 12432, "x": 1110, "y": 564}
-{"type": "mouse_move", "t": 12448, "x": 1126, "y": 570}
-{"type": "key", "t": 12463, "key": "Character", "modifiers": []}
-{"type": "mouse_move", "t": 12464, "x": 1140, "y": 576}
-{"type": "mouse_move", "t": 12480, "x": 1153, "y": 581}
-{"type": "mouse_move", "t": 12496, "x": 1165, "y": 586}
-{"type": "mouse_move", "t": 12512, "x": 1175, "y": 590}
-{"type": "mouse_move", "t": 12528, "x": 1184, "y": 593}
-{"type": "mouse_move", "t": 12544, "x": 1191, "y": 596}
-{"type": "mouse_move", "t": 12560, "x": 1196, "y": 598}
-{"type": "mouse_move", "t": 12576, "x": 1199, "y": 600}
-{"type": "mouse_move", "t": 12592, "x": 1200, "y": 600}
-{"type": "key", "t": 13441, "key": "Character", "modifiers": ["Ctrl"]}
-{"type": "key", "t": 19700, "key": "Character", "modifiers": ["Ctrl", "Shift"]}
+{"type":"cursor_shape","t":51,"shape":"arrow"}
+{"type":"mouse_move","t":249,"x":466.0,"y":1064.0}
+{"type":"mouse_move","t":259,"x":466.0,"y":1064.0}
+{"type":"mouse_move","t":270,"x":466.0,"y":1064.0}
+{"type":"mouse_move","t":281,"x":466.0,"y":1063.0}
+{"type":"mouse_move","t":292,"x":467.0,"y":1063.0}
+{"type":"mouse_move","t":303,"x":469.0,"y":1061.0}
+{"type":"mouse_move","t":314,"x":470.0,"y":1058.0}
+{"type":"mouse_move","t":325,"x":474.0,"y":1055.0}
+{"type":"mouse_move","t":336,"x":480.0,"y":1049.0}
+{"type":"mouse_move","t":347,"x":490.0,"y":1041.0}
+{"type":"mouse_move","t":357,"x":505.0,"y":1030.0}
+{"type":"mouse_move","t":367,"x":522.0,"y":1016.0}
+{"type":"mouse_move","t":378,"x":547.0,"y":991.0}
+{"type":"mouse_move","t":389,"x":575.0,"y":964.0}
+{"type":"mouse_move","t":400,"x":607.0,"y":929.0}
+{"type":"mouse_move","t":410,"x":640.0,"y":891.0}
+{"type":"mouse_move","t":421,"x":676.0,"y":849.0}
+{"type":"mouse_move","t":432,"x":717.0,"y":802.0}
+{"type":"mouse_move","t":442,"x":756.0,"y":759.0}
+{"type":"mouse_move","t":453,"x":797.0,"y":717.0}
+{"type":"mouse_move","t":464,"x":837.0,"y":679.0}
+{"type":"mouse_move","t":474,"x":874.0,"y":648.0}
+{"type":"mouse_move","t":485,"x":910.0,"y":618.0}
+{"type":"mouse_move","t":496,"x":945.0,"y":592.0}
+{"type":"mouse_move","t":506,"x":974.0,"y":572.0}
+{"type":"mouse_move","t":517,"x":1009.0,"y":550.0}
+{"type":"mouse_move","t":527,"x":1036.0,"y":535.0}
+{"type":"mouse_move","t":537,"x":1060.0,"y":521.0}
+{"type":"mouse_move","t":548,"x":1081.0,"y":509.0}
+{"type":"cursor_shape","t":555,"shape":"ibeam"}
+{"type":"mouse_move","t":558,"x":1102.0,"y":498.0}
+{"type":"mouse_move","t":569,"x":1119.0,"y":489.0}
+{"type":"mouse_move","t":579,"x":1132.0,"y":482.0}
+{"type":"mouse_move","t":590,"x":1143.0,"y":476.0}
+{"type":"mouse_move","t":601,"x":1151.0,"y":470.0}
+{"type":"mouse_move","t":611,"x":1156.0,"y":466.0}
+{"type":"mouse_move","t":622,"x":1160.0,"y":463.0}
+{"type":"mouse_move","t":633,"x":1162.0,"y":460.0}
+{"type":"mouse_move","t":643,"x":1164.0,"y":457.0}
+{"type":"mouse_move","t":656,"x":1165.0,"y":455.0}
+{"type":"mouse_move","t":668,"x":1166.0,"y":453.0}
+{"type":"mouse_move","t":678,"x":1166.0,"y":452.0}
+{"type":"mouse_move","t":689,"x":1166.0,"y":451.0}
+{"type":"mouse_move","t":704,"x":1167.0,"y":449.0}
+{"type":"mouse_move","t":715,"x":1168.0,"y":448.0}
+{"type":"mouse_move","t":725,"x":1168.0,"y":448.0}
+{"type":"mouse_move","t":739,"x":1169.0,"y":446.0}
+{"type":"mouse_move","t":749,"x":1169.0,"y":445.0}
+{"type":"mouse_move","t":761,"x":1170.0,"y":445.0}
+{"type":"mouse_move","t":774,"x":1170.0,"y":444.0}
+{"type":"mouse_move","t":791,"x":1170.0,"y":443.0}
+{"type":"click","t":873,"btn":"left","x":1170.0,"y":443.0}
+{"type":"click_release","t":974,"btn":"left","x":1170.0,"y":443.0}
+{"type":"key","t":4133,"key":"Character","modifiers":[]}
+{"type":"key","t":4212,"key":"Character","modifiers":[]}
+{"type":"key","t":4260,"key":"Character","modifiers":[]}
+{"type":"key","t":4316,"key":"Character","modifiers":[]}
+{"type":"key","t":4407,"key":"Character","modifiers":[]}
+{"type":"key","t":4527,"key":"Character","modifiers":[]}
+{"type":"key","t":4627,"key":"Return","modifiers":[]}
+{"type":"key","t":4723,"key":"Character","modifiers":[]}
+{"type":"key","t":4784,"key":"Character","modifiers":[]}
+{"type":"key","t":4973,"key":"Character","modifiers":[]}
+{"type":"key","t":5012,"key":"Character","modifiers":[]}
+{"type":"key","t":5129,"key":"Character","modifiers":[]}
+{"type":"key","t":5196,"key":"Character","modifiers":[]}
+{"type":"key","t":5249,"key":"Space","modifiers":[]}
+{"type":"key","t":5358,"key":"Character","modifiers":[]}
+{"type":"key","t":5415,"key":"Character","modifiers":[]}
+{"type":"key","t":5557,"key":"Character","modifiers":[]}
+{"type":"key","t":5591,"key":"Character","modifiers":[]}
+{"type":"key","t":5796,"key":"Symbol","modifiers":[]}
+{"type":"key","t":5839,"key":"Return","modifiers":[]}
+{"type":"key","t":5940,"key":"Return","modifiers":[]}
+{"type":"key","t":6292,"key":"Character","modifiers":[]}
+{"type":"key","t":6359,"key":"Character","modifiers":[]}
+{"type":"key","t":6427,"key":"Character","modifiers":[]}
+{"type":"key","t":6510,"key":"Character","modifiers":[]}
+{"type":"key","t":6585,"key":"Character","modifiers":[]}
+{"type":"key","t":6694,"key":"Character","modifiers":[]}
+{"type":"key","t":6785,"key":"Return","modifiers":[]}
+{"type":"key","t":6914,"key":"Character","modifiers":[]}
+{"type":"key","t":6980,"key":"Character","modifiers":[]}
+{"type":"key","t":7136,"key":"Character","modifiers":[]}
+{"type":"key","t":7204,"key":"Character","modifiers":[]}
+{"type":"key","t":7317,"key":"Character","modifiers":[]}
+{"type":"key","t":7393,"key":"Character","modifiers":[]}
+{"type":"key","t":7462,"key":"Space","modifiers":[]}
+{"type":"key","t":7575,"key":"Character","modifiers":[]}
+{"type":"key","t":7652,"key":"Character","modifiers":[]}
+{"type":"key","t":7717,"key":"Character","modifiers":[]}
+{"type":"key","t":7809,"key":"Character","modifiers":[]}
+{"type":"key","t":7878,"key":"Character","modifiers":[]}
+{"type":"key","t":8028,"key":"Character","modifiers":[]}
+{"type":"key","t":8055,"key":"Character","modifiers":[]}
+{"type":"key","t":8270,"key":"Symbol","modifiers":[]}
+{"type":"key","t":8301,"key":"Return","modifiers":[]}
+{"type":"key","t":8401,"key":"Return","modifiers":[]}
+{"type":"key","t":8617,"key":"Character","modifiers":[]}
+{"type":"key","t":8685,"key":"Character","modifiers":[]}
+{"type":"key","t":8753,"key":"Character","modifiers":[]}
+{"type":"key","t":8821,"key":"Character","modifiers":[]}
+{"type":"key","t":8949,"key":"Character","modifiers":[]}
+{"type":"key","t":9031,"key":"Character","modifiers":[]}
+{"type":"key","t":9140,"key":"Return","modifiers":[]}
+{"type":"key","t":9258,"key":"Character","modifiers":[]}
+{"type":"key","t":9317,"key":"Character","modifiers":[]}
+{"type":"key","t":9462,"key":"Character","modifiers":[]}
+{"type":"key","t":9553,"key":"Character","modifiers":[]}
+{"type":"key","t":9673,"key":"Character","modifiers":[]}
+{"type":"key","t":9744,"key":"Character","modifiers":[]}
+{"type":"key","t":9816,"key":"Space","modifiers":[]}
+{"type":"key","t":9912,"key":"Character","modifiers":[]}
+{"type":"key","t":9989,"key":"Character","modifiers":[]}
+{"type":"key","t":10048,"key":"Character","modifiers":[]}
+{"type":"key","t":10163,"key":"Character","modifiers":[]}
+{"type":"key","t":10197,"key":"Character","modifiers":[]}
+{"type":"key","t":10284,"key":"Character","modifiers":[]}
+{"type":"key","t":10477,"key":"Character","modifiers":[]}
+{"type":"key","t":10537,"key":"Character","modifiers":[]}
+{"type":"key","t":10750,"key":"Symbol","modifiers":[]}
+{"type":"key","t":10795,"key":"Return","modifiers":[]}
+{"type":"key","t":10897,"key":"Character","modifiers":[]}
+{"type":"key","t":10975,"key":"Character","modifiers":[]}
+{"type":"key","t":11025,"key":"Character","modifiers":[]}
+{"type":"key","t":11184,"key":"Character","modifiers":[]}
+{"type":"key","t":11288,"key":"Character","modifiers":[]}
+{"type":"key","t":11318,"key":"Character","modifiers":[]}
+{"type":"key","t":11436,"key":"Character","modifiers":[]}
+{"type":"key","t":11498,"key":"Character","modifiers":[]}
+{"type":"key","t":11571,"key":"Character","modifiers":[]}
+{"type":"key","t":11713,"key":"Character","modifiers":[]}
+{"type":"key","t":11741,"key":"Character","modifiers":[]}
+{"type":"key","t":11850,"key":"Return","modifiers":[]}
+{"type":"key","t":11955,"key":"Character","modifiers":[]}
+{"type":"key","t":12036,"key":"Character","modifiers":[]}
+{"type":"key","t":12080,"key":"Character","modifiers":[]}
+{"type":"key","t":12265,"key":"Character","modifiers":[]}
+{"type":"key","t":12390,"key":"Character","modifiers":[]}
+{"type":"key","t":12461,"key":"Character","modifiers":[]}
+{"type":"key","t":12576,"key":"Character","modifiers":[]}
+{"type":"key","t":12684,"key":"Character","modifiers":[]}
+{"type":"key","t":12743,"key":"Character","modifiers":[]}
+{"type":"key","t":12905,"key":"Character","modifiers":[]}
+{"type":"key","t":12958,"key":"Character","modifiers":[]}
+{"type":"key","t":13179,"key":"Symbol","modifiers":[]}
+{"type":"key","t":13246,"key":"Return","modifiers":[]}
+{"type":"key","t":14228,"key":"Character","modifiers":["Ctrl"]}
+{"type":"cursor_shape","t":14295,"shape":"arrow"}
+{"type":"mouse_move","t":15463,"x":1170.0,"y":443.0}
+{"type":"mouse_move","t":15474,"x":1163.0,"y":443.0}
+{"type":"mouse_move","t":15485,"x":1150.0,"y":442.0}
+{"type":"mouse_move","t":15495,"x":1133.0,"y":442.0}
+{"type":"mouse_move","t":15506,"x":1109.0,"y":442.0}
+{"type":"mouse_move","t":15516,"x":1082.0,"y":442.0}
+{"type":"mouse_move","t":15527,"x":1049.0,"y":445.0}
+{"type":"mouse_move","t":15537,"x":1014.0,"y":450.0}
+{"type":"mouse_move","t":15548,"x":981.0,"y":454.0}
+{"type":"mouse_move","t":15558,"x":966.0,"y":456.0}
+{"type":"mouse_move","t":15583,"x":963.0,"y":456.0}
+{"type":"mouse_move","t":15597,"x":963.0,"y":457.0}
+{"type":"mouse_move","t":15608,"x":963.0,"y":460.0}
+{"type":"mouse_move","t":15619,"x":962.0,"y":464.0}
+{"type":"mouse_move","t":15629,"x":959.0,"y":471.0}
+{"type":"mouse_move","t":15640,"x":954.0,"y":478.0}
+{"type":"mouse_move","t":15651,"x":947.0,"y":487.0}
+{"type":"mouse_move","t":15662,"x":940.0,"y":494.0}
+{"type":"mouse_move","t":15673,"x":934.0,"y":500.0}
+{"type":"mouse_move","t":15683,"x":928.0,"y":506.0}
+{"type":"mouse_move","t":15694,"x":922.0,"y":511.0}
+{"type":"mouse_move","t":15704,"x":917.0,"y":515.0}
+{"type":"mouse_move","t":15715,"x":915.0,"y":518.0}
+{"type":"mouse_move","t":15726,"x":913.0,"y":521.0}
+{"type":"mouse_move","t":15739,"x":911.0,"y":522.0}
+{"type":"mouse_move","t":15801,"x":911.0,"y":522.0}
+{"type":"mouse_move","t":15816,"x":910.0,"y":522.0}
+{"type":"mouse_move","t":15827,"x":908.0,"y":522.0}
+{"type":"mouse_move","t":15838,"x":907.0,"y":520.0}
+{"type":"mouse_move","t":15850,"x":906.0,"y":520.0}
+{"type":"mouse_move","t":15861,"x":906.0,"y":519.0}
+{"type":"mouse_move","t":15875,"x":905.0,"y":518.0}
+{"type":"mouse_move","t":15893,"x":904.0,"y":517.0}
+{"type":"mouse_move","t":15904,"x":903.0,"y":515.0}
+{"type":"mouse_move","t":15918,"x":903.0,"y":513.0}
+{"type":"mouse_move","t":15929,"x":902.0,"y":511.0}
+{"type":"mouse_move","t":15941,"x":901.0,"y":508.0}
+{"type":"click","t":15965,"btn":"left","x":901.0,"y":507.0}
+{"type":"click_release","t":16126,"btn":"left","x":901.0,"y":507.0}
+{"type":"mouse_move","t":16165,"x":901.0,"y":507.0}
+{"type":"mouse_move","t":16178,"x":901.0,"y":504.0}
+{"type":"mouse_move","t":16189,"x":901.0,"y":502.0}
+{"type":"mouse_move","t":16199,"x":902.0,"y":501.0}
+{"type":"cursor_shape","t":16209,"shape":"ibeam"}
+{"type":"key","t":17066,"key":"Character","modifiers":["Ctrl","Shift"]}

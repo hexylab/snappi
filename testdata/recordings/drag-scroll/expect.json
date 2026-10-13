@@ -1,23 +1,57 @@
 {
   "description": "ドラッグ＆ドロップと長いスクロール",
-  "synthetic": true,
   "checks": [
     {
       "kind": "visible",
-      "t_ms": 3560,
-      "x": 1400,
-      "y": 500
+      "t_ms": 1512,
+      "x": 732.0,
+      "y": 481.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 4075,
+      "x": 694.0,
+      "y": 54.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 8747,
+      "x": 399.0,
+      "y": 56.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 11465,
+      "x": 696.0,
+      "y": 46.0
+    },
+    {
+      "kind": "visible",
+      "t_ms": 17984,
+      "x": 403.0,
+      "y": 49.0
     },
     {
       "kind": "zoomed_in",
-      "from_ms": 6560,
-      "to_ms": 14840,
+      "from_ms": 1512,
+      "to_ms": 5006,
       "min_ratio": 0.9
     },
     {
-      "kind": "zoomed_out",
-      "from_ms": 18840,
-      "to_ms": 22000
+      "kind": "zoomed_in",
+      "from_ms": 8747,
+      "to_ms": 12702,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 16690,
+      "to_ms": 25794,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "max_switches",
+      "max": 6
     }
   ]
 }

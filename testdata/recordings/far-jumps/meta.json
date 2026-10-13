@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "id": "synthetic-far-jumps",
+  "id": "691016a4-c49d-47b2-a533-aadba9244aa6",
   "screen_width": 1920,
   "screen_height": 1080,
-  "fps": 30,
-  "start_time": "2026-10-13T12:00:00+09:00",
-  "duration_ms": 22000,
-  "has_audio": false,
+  "fps": 60,
+  "start_time": "2026-10-13T21:59:42.070403300+09:00",
+  "duration_ms": 16768,
+  "has_audio": true,
   "monitor_scale": 1.0,
   "recording_dir": "",
   "recording_mode": "display",
   "window_title": null,
   "window_initial_rect": null,
-  "frame_count": 660
+  "frame_count": 31
 }
