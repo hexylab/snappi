@@ -1,0 +1,42 @@
+# 個人情報・秘密情報のチェック（ローカルの .githooks と同じ内容。フックを入れていない環境の補い）
+name: gitleaks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan history
+        run: gitleaks git --no-banner --redact -v -c .gitleaks.toml .
+
+      - name: Check commit emails
+        run: |
+          . .githooks/common.sh
+          bad=$(git log --format='%h %ae %ce' HEAD | while read -r h ae ce; do
+            is_allowed_email "$ae" && is_allowed_email "$ce" || echo "$h author=$ae committer=$ce"
+          done)
+          if [ -n "$bad" ]; then
+            echo "noreply 以外のメールアドレスのコミットがあります:"
+            echo "$bad"
+            exit 1
+          fi

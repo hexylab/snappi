@@ -1,0 +1,38 @@
+# Gitleaks の設定。標準ルール（API キー・トークン等）に、個人情報向けのルールを足す。
+# 個人に固有の文字列（ユーザー名・メールアドレス）はここに書かないこと。書くとそれ自体が公開される。
+# 固有の文字列は .git/gitleaks.local.toml に書く（.githooks/README.md）。
+
+title = "snappi"
+
+[extend]
+useDefault = true
+
+# Windows のユーザーフォルダ（C:\Users\<名前>\ や /c/Users/<名前>/）。ユーザー名が分かってしまう。
+# 例示用の C:\Users\...\ や %USERPROFILE% は対象外（名前の 1 文字目に . を許さない）。
+[[rules]]
+id = "windows-user-path"
+description = "Windows のユーザーフォルダのパス（ユーザー名を含む）"
+regex = '''(?i)(?:\b[a-z]:|/[a-z])[\\/]+users[\\/]+([^\\/\s"'`<>*.%$][^\\/\s"'`<>*%$]*)'''
+secretGroup = 1
+keywords = ["users"]
+
+[[rules.allowlists]]
+description = "Windows の既定フォルダ"
+regexTarget = "secret"
+regexes = ['''(?i)^(public|default|all users)$''']
+
+# メールアドレス。GitHub の noreply・例示用ドメインなどは対象外。
+[[rules]]
+id = "email-address"
+description = "メールアドレス"
+regex = '''\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b'''
+keywords = ["@"]
+
+[[rules.allowlists]]
+description = "noreply・例示用・画像ファイル名（icon@2x.png）"
+regexTarget = "match"
+regexes = [
+  '''(?i)noreply''',
+  '''(?i)@(?:[a-z0-9-]+\.)*example\.(?:com|org|net)$''',
+  '''(?i)@\d+x\.(?:png|jpg|jpeg|gif|webp|svg)$''',
+]

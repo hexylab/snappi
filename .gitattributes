@@ -1,0 +1,2 @@
+# Git フックは sh で動くので、Windows でも LF のまま取り出す
+.githooks/* text eol=lf
