@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod changes;
 pub mod commands;
 pub mod config;
 pub mod engine;

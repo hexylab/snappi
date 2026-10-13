@@ -5,9 +5,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// 前面ウィンドウの変化を記録するファイル名
+pub const WINDOW_EVENTS_FILE: &str = "window_events.jsonl";
+
 /// Track foreground window changes using Windows API polling.
-/// Writes WindowFocus events to window_events.jsonl when the
-/// foreground window changes.
+/// 前面ウィンドウが変わったとき、または前面ウィンドウの矩形が変わったとき（開くアニメーションの
+/// 終わり・移動・リサイズ）に WindowFocus イベントを window_events.jsonl に書く (Issue #39)。
 pub fn track_focus(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
@@ -24,9 +27,10 @@ pub fn track_focus(
             GetForegroundWindow, GetWindowRect, GetWindowTextW,
         };
 
-        let events_path = output_dir.join("window_events.jsonl");
+        let events_path = output_dir.join(WINDOW_EVENTS_FILE);
         let mut file = std::fs::File::create(&events_path)?;
         let mut last_hwnd: isize = 0;
+        let mut last_rect = [0i32; 4];
 
         while is_running.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -39,7 +43,16 @@ pub fn track_focus(
                 let hwnd = GetForegroundWindow();
                 let hwnd_raw = hwnd.0 as isize;
 
-                if hwnd_raw == last_hwnd || hwnd_raw == 0 {
+                if hwnd_raw == 0 {
+                    continue;
+                }
+
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_err() {
+                    continue;
+                }
+                let rect_arr = [rect.left, rect.top, rect.right, rect.bottom];
+                if hwnd_raw == last_hwnd && rect_arr == last_rect {
                     continue;
                 }
 
@@ -54,10 +67,9 @@ pub fn track_focus(
                 }
 
                 last_hwnd = hwnd_raw;
+                last_rect = rect_arr;
 
-                // Get window rect
-                let mut rect = RECT::default();
-                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                {
                     let t = clock.now_ms();
                     let event = RecordingEvent::WindowFocus {
                         t,

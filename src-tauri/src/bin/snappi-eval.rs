@@ -4,12 +4,15 @@
 //! cargo run --bin snappi-eval -- <recording_dir> [--metrics] [--debug-video <out.mp4>]
 //! cargo run --bin snappi-eval -- <recording_dir> --draft-expect
 //! cargo run --bin snappi-eval -- <recording_dir>... --table
+//! cargo run --release --bin snappi-eval -- <recording_dir>... --changes
 //! ```
 //! オプションを省略した場合は `--metrics` とみなす。
 //! `--draft-expect` は expect.json の下書きを標準出力に出す（description は既存の expect.json から引き継ぐ）。
 //! `--table` は複数の録画のメトリクスを Markdown の表（仕様書のベースライン表の形式）で出す。
+//! `--changes` は frames から changes.jsonl（画面の変化領域, Issue #39）を作り直す。
 //! 録画でないディレクトリ（`testdata/recordings` 等）を渡すと、その直下の録画をすべて対象にする。
 
+use snappi_lib::camera;
 use snappi_lib::eval::expect::Expectation;
 use snappi_lib::eval::{self, debug_video};
 use snappi_lib::recording_data::RecordingData;
@@ -18,7 +21,8 @@ use std::process::ExitCode;
 
 const USAGE: &str = "使い方: snappi-eval <recording_dir> [--metrics] [--debug-video <out.mp4>]
        snappi-eval <recording_dir> --draft-expect
-       snappi-eval <recording_dir>... --table";
+       snappi-eval <recording_dir>... --table
+       snappi-eval <recording_dir>... --changes";
 
 struct Args {
     dirs: Vec<PathBuf>,
@@ -26,6 +30,7 @@ struct Args {
     debug_video: Option<PathBuf>,
     draft_expect: bool,
     table: bool,
+    changes: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -34,6 +39,7 @@ fn parse_args() -> Result<Args, String> {
     let mut debug_video = None;
     let mut draft_expect = false;
     let mut table = false;
+    let mut changes = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -43,6 +49,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--draft-expect" => draft_expect = true,
             "--table" => table = true,
+            "--changes" => changes = true,
             "-h" | "--help" => return Err(String::new()),
             a if a.starts_with('-') => return Err(format!("不明なオプション: {}", a)),
             a => dirs.push(PathBuf::from(a)),
@@ -51,15 +58,15 @@ fn parse_args() -> Result<Args, String> {
     if dirs.is_empty() {
         return Err("録画ディレクトリを指定してください".into());
     }
-    if table {
-        if metrics || debug_video.is_some() || draft_expect {
-            return Err("--table は他のオプションと同時に指定できません".into());
+    if table || changes {
+        if metrics || debug_video.is_some() || draft_expect || (table && changes) {
+            return Err("--table / --changes は他のオプションと同時に指定できません".into());
         }
     } else if dirs.len() > 1 {
         return Err(format!("余分な引数: {}", dirs[1].display()));
     }
-    let metrics = metrics || (debug_video.is_none() && !draft_expect && !table);
-    Ok(Args { dirs, metrics, debug_video, draft_expect, table })
+    let metrics = metrics || (debug_video.is_none() && !draft_expect && !table && !changes);
+    Ok(Args { dirs, metrics, debug_video, draft_expect, table, changes })
 }
 
 fn main() -> ExitCode {
@@ -74,7 +81,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let result = if args.table { print_table(&args.dirs) } else { run(&args) };
+    let result = if args.table {
+        print_table(&args.dirs)
+    } else if args.changes {
+        generate_changes(&args.dirs)
+    } else {
+        run(&args)
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -109,6 +122,14 @@ fn run(args: &Args) -> anyhow::Result<()> {
             data.events.len(),
             data.meta.recording_mode.as_deref().unwrap_or("display"),
         );
+        println!("\nショット（ズーム強さ「標準」）:");
+        for s in camera::plan(&data, &camera::CameraConfig::default()) {
+            println!(
+                "  {:>6}〜{:>6}ms 操作 {:>6}〜{:>6}ms  x{:.2}  中心 ({:.0}, {:.0})  主役 [{:.0}, {:.0}, {:.0}, {:.0}]",
+                s.start, s.end, s.first, s.last, s.zoom, s.center.0, s.center.1,
+                s.subject.l, s.subject.t, s.subject.r, s.subject.b
+            );
+        }
         println!("\nメトリクス ({}fps):", report.track.fps);
         for r in &report.metric_results {
             println!("  {}", r);
@@ -129,7 +150,16 @@ fn run(args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `--table` の対象。meta.json の無いディレクトリ（testdata/recordings 等）はその直下の録画に展開する。
+fn generate_changes(dirs: &[PathBuf]) -> anyhow::Result<()> {
+    for dir in &table_dirs(dirs)? {
+        snappi_lib::changes::generate(dir)?;
+        let n = snappi_lib::changes::load(dir).len();
+        println!("{}: 変化のあるフレーム {}", dir.display(), n);
+    }
+    Ok(())
+}
+
+/// `--table` / `--changes` の対象。meta.json の無いディレクトリ（testdata/recordings 等）はその直下の録画に展開する。
 fn table_dirs(dirs: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for dir in dirs {

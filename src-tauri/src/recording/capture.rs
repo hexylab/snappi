@@ -20,23 +20,75 @@ pub const WINDOW_RECTS_FILE: &str = "window_rects.jsonl";
 /// 最終出力は H.264 等で再圧縮されるため中間品質はこれで十分。
 const RECORDING_JPEG_QUALITY: u8 = 92;
 
-/// 画面キャプチャしたフレームを JPEG として保存するヘルパー。
-/// JPEG は RGBA を扱えないので RGB に変換して保存する（アルファは画面キャプチャに不要）。
-fn save_frame_as_jpeg(buffer: &[u8], width: u32, height: u32, path: &std::path::Path) -> std::io::Result<()> {
-    // RGBA → RGB（4 バイトごとに α を破棄）
-    let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-    for chunk in buffer.chunks_exact(4) {
-        rgb.push(chunk[0]);
-        rgb.push(chunk[1]);
-        rgb.push(chunk[2]);
+/// 取り込んだ BGRA の画素を RGB に変換して JPEG で保存する（アルファは画面キャプチャに不要）。
+fn save_bgra_as_jpeg(bgra: &[u8], width: u32, height: u32, path: &Path) -> std::io::Result<()> {
+    // 開発ビルド（最適化なし）でも速いよう、添字の範囲チェックが少ない単純なループで変換する
+    let n = (width * height) as usize;
+    let mut rgb = vec![0u8; n * 3];
+    for (dst, src) in rgb.chunks_exact_mut(3).zip(bgra.chunks_exact(4)).take(n) {
+        dst.copy_from_slice(&[src[2], src[1], src[0]]);
     }
-
     let file = std::fs::File::create(path)?;
     let mut w = std::io::BufWriter::new(file);
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, RECORDING_JPEG_QUALITY);
     enc.encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     Ok(())
+}
+
+/// 保存待ちのフレーム
+struct PendingFrame {
+    path: std::path::PathBuf,
+    bgra: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+}
+
+/// フレームの変換と JPEG 保存を複数のワーカースレッドで行う (Issue #39)。
+///
+/// キャプチャのスレッドは画面の取り込みだけを行い、保存を待たない。保存が追いつかないときは
+/// `submit` が待つ（キューの長さで上限を決める）ので、フレームレートが落ちてもメモリは増え続けない。
+struct FrameWriter {
+    tx: Option<std::sync::mpsc::SyncSender<PendingFrame>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl FrameWriter {
+    fn new() -> Self {
+        let n = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 6) - 1;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<PendingFrame>(n * 2);
+        let rx = Arc::new(std::sync::Mutex::new(rx));
+        let workers = (0..n)
+            .map(|_| {
+                let rx = rx.clone();
+                std::thread::spawn(move || loop {
+                    let frame = match rx.lock() {
+                        Ok(rx) => rx.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(f) = frame else { return };
+                    if let Err(e) = save_bgra_as_jpeg(&f.bgra, f.width, f.height, &f.path) {
+                        log::warn!("フレームを保存できません {}: {}", f.path.display(), e);
+                    }
+                })
+            })
+            .collect();
+        Self { tx: Some(tx), workers }
+    }
+
+    fn submit(&self, path: std::path::PathBuf, bgra: Arc<Vec<u8>>, width: u32, height: u32) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(PendingFrame { path, bgra, width, height });
+        }
+    }
+
+    /// 保存待ちのフレームをすべて書き終えるまで待つ
+    fn finish(mut self) {
+        self.tx.take();
+        for w in self.workers.drain(..) {
+            let _ = w.join();
+        }
+    }
 }
 
 /// Capture a specific window's frames using PrintWindow (with DWM content) + fallback to screen BitBlt.
@@ -134,7 +186,8 @@ pub fn capture_window(
             true
         };
 
-        let mut last_buffer: Option<Vec<u8>> = None;
+        let mut last_buffer: Option<Arc<Vec<u8>>> = None;
+        let writer = FrameWriter::new();
         let mut last_width: i32 = 0;
         let mut last_height: i32 = 0;
 
@@ -160,7 +213,7 @@ pub fn capture_window(
                     if last_width > 0 && last_height > 0 {
                         let t = clock.now_ms();
                         let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-                        let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
+                        writer.submit(frame_path, buf.clone(), last_width as u32, last_height as u32);
                         if let Some(w) = ts_writer.as_mut() {
                             let _ = writeln!(w, "{}", t);
                         }
@@ -183,7 +236,7 @@ pub fn capture_window(
                     if last_width > 0 && last_height > 0 {
                         let t = clock.now_ms();
                         let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-                        let _ = save_frame_as_jpeg(buf, last_width as u32, last_height as u32, &frame_path);
+                        writer.submit(frame_path, buf.clone(), last_width as u32, last_height as u32);
                         if let Some(w) = ts_writer.as_mut() {
                             let _ = writeln!(w, "{}", t);
                         }
@@ -267,18 +320,15 @@ pub fn capture_window(
             );
 
             // BGRA → RGBA
-            for chunk in buffer.chunks_exact_mut(4) {
-                chunk.swap(0, 2);
-            }
-
             // Cleanup GDI objects (but keep screen_dc alive)
             SelectObject(mem_dc, old_bitmap);
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
 
-            // Save frame as JPEG for drastically reduced disk usage
+            // JPEG への変換・保存はワーカーに任せる（BGRA のまま渡す）
+            let buffer = Arc::new(buffer);
             let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-            let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
+            writer.submit(frame_path, buffer.clone(), width as u32, height as u32);
             if let Some(w) = ts_writer.as_mut() {
                 let _ = writeln!(w, "{}", t);
             }
@@ -294,6 +344,7 @@ pub fn capture_window(
 
         // Release the screen DC
         ReleaseDC(HWND::default(), screen_dc);
+        writer.finish();
     }
 
     if let Some(mut w) = ts_writer {
@@ -374,7 +425,7 @@ pub fn capture_area(
             };
 
             let buffer_size = (area_w * area_h * 4) as usize;
-            let mut buffer = vec![0u8; buffer_size];
+            let writer = FrameWriter::new();
 
             while is_running.load(Ordering::SeqCst) {
                 let frame_start = std::time::Instant::now();
@@ -386,6 +437,7 @@ pub fn capture_area(
 
                 let t = clock.now_ms();
                 let _ = BitBlt(mem_dc, 0, 0, area_w, area_h, screen_dc, area_x, area_y, SRCCOPY);
+                let mut buffer = vec![0u8; buffer_size];
 
                 GetDIBits(
                     mem_dc, bitmap, 0, area_h as u32,
@@ -393,12 +445,9 @@ pub fn capture_area(
                     &mut bmi, DIB_RGB_COLORS,
                 );
 
-                for chunk in buffer.chunks_exact_mut(4) {
-                    chunk.swap(0, 2);
-                }
-
+                // JPEG への変換・保存はワーカーに任せる（BGRA のまま渡す）
                 let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-                let _ = save_frame_as_jpeg(&buffer, area_w as u32, area_h as u32, &frame_path);
+                writer.submit(frame_path, Arc::new(buffer), area_w as u32, area_h as u32);
                 if let Some(w) = ts_writer.as_mut() {
                     let _ = writeln!(w, "{}", t);
                 }
@@ -415,6 +464,7 @@ pub fn capture_area(
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
             let _ = ReleaseDC(HWND::default(), screen_dc);
+            writer.finish();
         }
     }
 
@@ -482,7 +532,7 @@ pub fn capture_screen(
             };
 
             let buffer_size = (width * height * 4) as usize;
-            let mut buffer = vec![0u8; buffer_size];
+            let writer = FrameWriter::new();
 
             while is_running.load(Ordering::SeqCst) {
                 let frame_start = std::time::Instant::now();
@@ -495,6 +545,7 @@ pub fn capture_screen(
                 // Capture screen（取り込み瞬間の時刻をフレーム時刻とする）
                 let t = clock.now_ms();
                 let _ = BitBlt(mem_dc, 0, 0, width, height, screen_dc, 0, 0, SRCCOPY);
+                let mut buffer = vec![0u8; buffer_size];
 
                 // Get pixel data
                 GetDIBits(
@@ -507,14 +558,9 @@ pub fn capture_screen(
                     DIB_RGB_COLORS,
                 );
 
-                // Convert BGRA to RGBA
-                for chunk in buffer.chunks_exact_mut(4) {
-                    chunk.swap(0, 2);
-                }
-
-                // Save frame as PNG (for FFmpeg later)
+                // JPEG への変換・保存はワーカーに任せる（BGRA のまま渡す）
                 let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-                let _ = save_frame_as_jpeg(&buffer, width as u32, height as u32, &frame_path);
+                writer.submit(frame_path, Arc::new(buffer), width as u32, height as u32);
                 if let Some(w) = ts_writer.as_mut() {
                     let _ = writeln!(w, "{}", t);
                 }
@@ -533,6 +579,7 @@ pub fn capture_screen(
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
             let _ = ReleaseDC(HWND::default(), screen_dc);
+            writer.finish();
         }
     }
 
@@ -548,4 +595,34 @@ pub fn capture_screen(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 実際の画面を 3 秒キャプチャして実効フレームレートを表示する（手動で実行するベンチマーク, Issue #39）。
+    /// `cargo test --lib capture_rate -- --ignored --nocapture`（`--release` を付けると本番ビルドの値）
+    #[test]
+    #[ignore]
+    fn capture_rate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let paused = Arc::new(AtomicBool::new(false));
+        let clock = Arc::new(RecordingClock::new());
+        let (r, p, c, out) = (running.clone(), paused.clone(), clock.clone(), dir.path().to_path_buf());
+        let handle = std::thread::spawn(move || capture_screen(r, p, &out, 60, c));
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        running.store(false, Ordering::SeqCst);
+        handle.join().unwrap().unwrap();
+        let times: Vec<u64> = std::fs::read_to_string(dir.path().join(FRAME_TIMESTAMPS_FILE))
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        let saved = std::fs::read_dir(dir.path().join("frames")).unwrap().count();
+        let span = (times.last().unwrap() - times[0]).max(1) as f64 / 1000.0;
+        println!("frames {} (saved {}), {:.1} fps", times.len(), saved, (times.len() - 1) as f64 / span);
+        assert_eq!(saved, times.len());
+    }
 }

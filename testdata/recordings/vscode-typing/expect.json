@@ -1,17 +1,41 @@
 {
-  "description": "エディタでクリックしてからコードを入力し、保存する",
+  "description": "エディタでクリックしてからコードを入力し、保存する。編集者なら入力行と変換候補に寄り、保存ダイアログは全体を映す",
   "checks": [
-    {
-      "kind": "zoomed_in",
-      "from_ms": 4133,
-      "to_ms": 14228,
-      "min_ratio": 0.9
-    },
     {
       "kind": "zoomed_out",
       "from_ms": 0,
-      "to_ms": 3033,
+      "to_ms": 3000,
       "min_ratio": 1.0
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 4400,
+      "to_ms": 15900,
+      "min_ratio": 0.95
+    },
+    {
+      "kind": "framed",
+      "from_ms": 4400,
+      "to_ms": 13300,
+      "rect": [
+        400,
+        40,
+        860,
+        336
+      ],
+      "min_ratio": 0.95
+    },
+    {
+      "kind": "framed",
+      "from_ms": 15300,
+      "to_ms": 15900,
+      "rect": [
+        0,
+        0,
+        960,
+        540
+      ],
+      "min_ratio": 0.9
     },
     {
       "kind": "max_switches",

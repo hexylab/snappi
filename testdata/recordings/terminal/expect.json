@@ -1,11 +1,59 @@
 {
-  "description": "クリックせずにターミナルでコマンドを入力する",
+  "description": "クリックせずにターミナルでコマンドを入力する。編集者ならプロンプトの行に寄り、Enter の後は出力を映す",
   "checks": [
     {
       "kind": "zoomed_in",
-      "from_ms": 1704,
-      "to_ms": 5654,
+      "from_ms": 2000,
+      "to_ms": 6800,
       "min_ratio": 0.9
+    },
+    {
+      "kind": "framed",
+      "from_ms": 2000,
+      "to_ms": 4000,
+      "rect": [
+        80,
+        568,
+        300,
+        612
+      ],
+      "min_ratio": 0.95
+    },
+    {
+      "kind": "framed",
+      "from_ms": 4700,
+      "to_ms": 5500,
+      "rect": [
+        80,
+        96,
+        752,
+        832
+      ],
+      "min_ratio": 0.95
+    },
+    {
+      "kind": "framed",
+      "from_ms": 5700,
+      "to_ms": 6200,
+      "rect": [
+        80,
+        800,
+        300,
+        836
+      ],
+      "min_ratio": 0.95
+    },
+    {
+      "kind": "within",
+      "from_ms": 2000,
+      "to_ms": 6800,
+      "rect": [
+        69,
+        44,
+        1548,
+        840
+      ],
+      "min_ratio": 0.95
     },
     {
       "kind": "max_switches",

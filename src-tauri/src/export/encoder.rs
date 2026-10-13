@@ -71,7 +71,7 @@ pub fn export(
     settings: &AppSettings,
     progress: Option<&ProgressFn>,
 ) -> Result<String> {
-    let data = RecordingData::load_by_id(recording_id)?;
+    let mut data = RecordingData::load_by_id(recording_id)?;
 
     log::info!("Starting effects composition for recording {}", recording_id);
     if let Some(cb) = progress { cb("analyzing", 0.0); }
@@ -80,6 +80,7 @@ pub fn export(
         Some(project) => project,
         None => {
             log::info!("project.json が無いため自動生成した区間で書き出す");
+            data.ensure_changes();
             Project::auto(&data, strength)
         }
     };

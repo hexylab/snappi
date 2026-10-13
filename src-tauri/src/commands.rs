@@ -312,10 +312,11 @@ fn zoom_strength_setting(state: &State<'_, AppState>) -> Result<ZoomStrength, St
 /// 録画の編集内容（project.json）を読む。無ければ自動生成した区間で作って保存する。
 #[tauri::command]
 pub fn load_project(recording_id: String, state: State<'_, AppState>) -> Result<Project, String> {
-    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    let mut data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
     if let Some(project) = Project::load(&data.dir).map_err(|e| e.to_string())? {
         return Ok(project);
     }
+    data.ensure_changes();
     let project = Project::auto(&data, zoom_strength_setting(&state)?);
     project.save(&data.dir).map_err(|e| e.to_string())?;
     log::info!("Created {} for recording {}", crate::project::PROJECT_FILE, recording_id);

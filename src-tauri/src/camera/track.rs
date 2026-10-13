@@ -1,4 +1,5 @@
-//! カメラトラックの計算 (Issue #29)。仕様 `docs/camera-spec-v5.md` §5 の F1〜F5 と §5.1 の遷移を、
+//! カメラトラックの計算 (Issue #29, #39)。ショット（`Fixed` の区間）は仕様 `docs/camera-spec-v6.md` §6 の F6、
+//! `Auto` の区間は `docs/old/camera-spec-v5.md` §5 の F1〜F5 と §5.1 の遷移を、
 //! 出力 fps で時刻を進めながら決定的にシミュレーションする。
 
 use super::config::CameraConfig;
@@ -263,6 +264,11 @@ impl Camera {
         let focus_point = seg.and_then(|s| focus.point(s, t));
         if let Some(tr) = self.transition {
             self.step_transition(t, tr);
+        } else if let Some(FocusMode::Fixed { x, y }) = seg.map(|s| s.focus) {
+            // F6: ショット（固定の枠）の間はカメラを止める
+            let (cx, cy) = self.clamp_center(x, y);
+            self.cx.snap(cx);
+            self.cy.snap(cy);
         } else if self.zoom_log > 0.0 {
             if let Some(s) = seg {
                 // 先読みした注目点に向けて早めに動き出し、バネの遅れを補う
@@ -286,6 +292,10 @@ impl Camera {
 
     /// 区間が変わったときに、倍率が変わるならズームの遷移を始める
     fn on_segment_change(&mut self, t: u64, seg: Option<&ZoomSegment>, to_log: f64, focus: &FocusSource) {
+        if let Some(FocusMode::Fixed { x, y }) = seg.map(|s| s.focus) {
+            self.move_to_shot(t, (x, y), to_log);
+            return;
+        }
         if (to_log - self.zoom_log).abs() < 1e-9 && self.transition.is_none() {
             return;
         }
@@ -320,6 +330,35 @@ impl Camera {
             anchor,
             u_from,
             u_to: (settle(u_from.0), settle(u_from.1)),
+        });
+    }
+
+    /// F6: 固定の枠（ショット）へ移る。移った先の枠の中心を anchor にして、
+    /// 今の画面上の位置から画面の中央へ動かしながら倍率を変える（寄る・引く・パンを 1 つの動きにする）。
+    /// 遠い移動ほど時間をかけ、速度上限を超えないようにする。
+    fn move_to_shot(&mut self, t: u64, point: (f64, f64), to_log: f64) {
+        let to_zoom = to_log.exp().max(1.0);
+        let (hw, hh) = (self.width / to_zoom / 2.0, self.height / to_zoom / 2.0);
+        let anchor = (point.0.clamp(hw, self.width - hw), point.1.clamp(hh, self.height - hh));
+        let now = self.state();
+        let dist = (anchor.0 - now.center_x).hypot(anchor.1 - now.center_y);
+        if dist < 0.5 && (to_log - self.zoom_log).abs() < 1e-9 {
+            self.transition = None;
+            return;
+        }
+        let vp = now.viewport(self.width, self.height);
+        let u_from = ((anchor.0 - vp.x) / vp.width, (anchor.1 - vp.y) / vp.height);
+        let base = if to_log >= self.zoom_log { spec::ZOOM_IN_MS } else { spec::ZOOM_OUT_MS };
+        // ease-in-out（cubic）の最大速度は平均の 1.5 倍
+        let pan_ms = (1.5 * dist / (spec::MAX_PAN_SPEED * 0.9 * self.width) * 1000.0) as u64;
+        self.transition = Some(Transition {
+            start_t: t,
+            duration_ms: base.max(pan_ms).min(spec::SHOT_MOVE_MAX_MS),
+            from_log: self.zoom_log,
+            to_log,
+            anchor,
+            u_from,
+            u_to: (0.5, 0.5),
         });
     }
 
@@ -431,6 +470,7 @@ mod tests {
             },
             events,
             frame_times: vec![],
+            changes: vec![],
         }
     }
 

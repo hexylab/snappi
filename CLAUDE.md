@@ -31,7 +31,7 @@ cargo build --manifest-path src-tauri/Cargo.toml
 
 ### カメラの評価 (Issue #28, #29)
 
-カメラ（ズーム・パン）の仕様は `docs/camera-spec-v5.md`。評価用データは `testdata/recordings/`。
+カメラ（ズーム・パン）の仕様は `docs/camera-spec-v6.md`（Issue #39。編集者の考え方に基づく「主役」と「ショット」）。評価用データは `testdata/recordings/`。
 
 ```bash
 cd src-tauri
@@ -41,14 +41,22 @@ cargo run --bin snappi-eval -- ../testdata/recordings/vscode-typing --metrics
 cargo run --release --bin snappi-eval -- <recording_dir> --debug-video out.mp4
 # 全シナリオに仕様を適用（cargo test にも含まれる）
 cargo test --test camera_eval -- --nocapture
-# 全シナリオのメトリクスを Markdown の表で出力（仕様書 §9 のベースライン更新用）
+# 全シナリオのメトリクスを Markdown の表で出力（仕様書 §11 の更新用）
 cargo run -q --bin snappi-eval -- ../testdata/recordings --table
+# frames から画面の変化領域 changes.jsonl を作り直す
+cargo run --release --bin snappi-eval -- <recording_dir> --changes
+# 録画の実効フレームレートを計測（実画面を 3 秒キャプチャ）
+cargo test --lib capture_rate -- --ignored --nocapture
 ```
 
 - 実録画を評価シナリオに取り込むときは `python testdata/import_recording.py latest <シナリオ名>`
   （frames/audio を除いてコピーし、`--draft-expect` で expect.json の下書きを作る）。手順は `testdata/recordings/README.md`。
 
 - 評価は `eval::compute_track`（既定設定のズーム強さで `camera::auto_segments` → `camera::camera_track`）。
+- 主役は `camera/subject.rs`（操作の直後の画面の変化 = `changes.jsonl`）、ショットは `camera/segments.rs`。
+  マウスカーソルの位置は主役に使わない。アプリ向けの分岐は持たない。
+- `expect.json` の `framed`（主役が枠内）・`within`（枠がウィンドウ内）には、録画フレームから人が読み取った
+  「編集者ならこう映す」を書く（エンジンの出力から書き写さない）。
 - 仕様パラメータは `camera/spec.rs`、メトリクスは `eval/metrics.rs`。値を変えたら仕様書も更新する。
 - `src-tauri/Cargo.toml` に `default-run = "snappi"` があるため、`cargo run` は従来どおりアプリを起動する。
 
@@ -69,7 +77,9 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
        Audio → audio.wav
        Metadata → meta.json, dimensions.txt
 
-[エクスポート] project.json の ZoomSegment 列とトリム（無ければ camera::auto_segments で自動生成・録画全体）
+       停止時に frames の差分 → changes.jsonl（画面の変化領域）
+
+[エクスポート] project.json の ZoomSegment 列とトリム（無ければ camera::auto_segments で自動生成・project::auto_trim）
               → camera::camera_track（出力フレームごとの CameraState）
               → Compositor（CameraState のビューポートで切り抜き・カーソル等を合成）→ FFmpeg → MP4/GIF/WebM
 ```
@@ -84,15 +94,16 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
   カメラは `get_camera_track`。合成を変えたら両方を揃えること。
 
 カメラエンジンは `src-tauri/src/camera/`:
-- `segments.rs`: 区間の自動生成（仕様 R1〜R5, F5）。純粋関数
-- `track.rs`: 出力 fps で決定的にシミュレーションしてカメラトラックを求める（F1〜F4, 遷移）
+- `subject.rs`: 操作ごとの主役の矩形（仕様 S1〜S2）。純粋関数
+- `segments.rs`: 主役からショット（`zoom: Some`・`focus: Fixed` の区間）を作る（S3〜S5, R3〜R5）
+- `track.rs`: 出力 fps で決定的にシミュレーションしてカメラトラックを求める（F6。`Auto` の区間は v5 の F1〜F4）
 - `config.rs`: `ZoomStrength`（設定「ズーム強さ」）から `CameraConfig` を作る
 - `spec.rs`: 仕様パラメータ。`engine/` には合成（`compositor.rs`）・バネ・カーソルスムージングだけが残る
 
 ### スレッドモデル
 
 録画中は3スレッドが並行動作。`Arc<AtomicBool>`でpause/stopを制御:
-- **capture**: Windows GDI BitBltで画面キャプチャ → PNG保存
+- **capture**: Windows GDI BitBltで画面キャプチャ → JPEG保存（変換・保存はワーカースレッド。開発ビルドでも 30fps 以上を保つため `[profile.dev]` は opt-level 1）
 - **events**: rdevでグローバルマウス/キーフック → JSONL
 - **audio**: cpal WASAPI loopbackでシステム音声 → WAV
 
@@ -127,7 +138,8 @@ SolidJS (src/lib/commands.ts)
 ├── frame_timestamps.txt  # 各フレームを取り込んだ瞬間の録画時刻 (ms)。1行1フレーム
 ├── events.jsonl          # マウス/キー入力 + cursor_shape イベント（画面座標）
 ├── ui_events.jsonl       # UI Automation のフォーカス要素矩形（画面座標）
-├── window_events.jsonl   # 前面ウィンドウの変化（ズーム計算には未使用）
+├── window_events.jsonl   # 前面ウィンドウとその矩形の変化（枠をウィンドウ内に収めるのに使う）
+├── changes.jsonl         # 画面の変化領域（停止時に frames から作る。`changes.rs`）
 ├── window_rects.jsonl    # ウィンドウ録画時のみ。矩形が変化したら {"t","rect":[l,t,r,b]}
 ├── audio.wav
 ├── project.json          # プレビューの編集内容（区間・トリム。`project::Project`）。書き出しはこれを使う
@@ -156,6 +168,6 @@ Rust側の型は `src-tauri/src/config/mod.rs` に集約。TypeScript側は以�
 `ZoomStrength`: `Off | Subtle(1.5x) | Standard(1.8x, 既定) | Strong(2.2x)`（`EffectsSettings.zoom_strength`）
 `ZoomSegment`: `{ id, start_ms, end_ms, zoom: Option<f64>, focus: Auto | Fixed { x, y } }`（`camera::segments`）
 `CameraTrack`: `{ fps, frames: Vec<CameraState { center_x, center_y, zoom }> }`（`camera`）
-`Project`: `{ version, segments, trim: { start_ms, end_ms }, zoom_strength: Option }`（`project.rs`、project.json）
+`Project`: `{ version, segments, trim: { start_ms, end_ms }, zoom_strength: Option }`（`project.rs`、project.json。自動生成時のトリムは `auto_trim`）
 `ExportFormat`: `Mp4 | Gif | WebM`
 `QualityPreset`: `Social(1080p/30fps) | HighQuality(元解像度/60fps) | Lightweight(720p/24fps)`

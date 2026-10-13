@@ -3,7 +3,7 @@
 //! プレビューで編集したズーム区間・トリムを録画ディレクトリに保存し、書き出しもこの内容を使う。
 //! ファイルが無い録画は、自動生成した区間と録画全体のトリムで作る。
 
-use crate::camera::{self, CameraConfig, ZoomSegment, ZoomStrength};
+use crate::camera::{self, spec, CameraConfig, ZoomSegment, ZoomStrength};
 use crate::recording_data::RecordingData;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -61,10 +61,12 @@ impl Project {
         }
     }
 
-    /// 自動生成した区間と録画全体のトリムで作る（`project.json` が無い録画の初期値）
+    /// 自動生成した区間と自動トリムで作る（`project.json` が無い録画の初期値）
     pub fn auto(data: &RecordingData, strength: ZoomStrength) -> Self {
         let segments = camera::auto_segments(data, &CameraConfig::from_strength(strength));
-        Self::new(segments, data.meta.duration_ms)
+        let mut project = Self::new(segments, data.meta.duration_ms);
+        project.trim = auto_trim(data);
+        project
     }
 
     pub fn path(recording_dir: &Path) -> PathBuf {
@@ -103,10 +105,84 @@ impl Project {
     }
 }
 
+/// T1: 録画の開始・停止の操作（Snappi 自身のウィンドウやホットキー）が写らないように切るトリム。
+///
+/// - 開始: 開始ガード（R5）と、録画冒頭 `AUTO_TRIM_START_SETTLE_MS` 以内の大きな画面の変化
+///   （Snappi のウィンドウが閉じる等）が写ったフレームの遅い方。最初の操作より後にはしない
+/// - 終了: 終了ガード（R5）の手前
+/// - 短い録画（`AUTO_TRIM_MIN_DURATION_MS` 未満）は切らない
+pub fn auto_trim(data: &RecordingData) -> Trim {
+    let duration = data.meta.duration_ms;
+    if duration < spec::AUTO_TRIM_MIN_DURATION_MS {
+        return Trim::full(duration);
+    }
+    let settled = data
+        .changes
+        .iter()
+        .filter(|c| c.t <= spec::AUTO_TRIM_START_SETTLE_MS)
+        .filter(|c| c.rects.iter().any(|r| r.cells >= spec::BIG_CHANGE_CELLS))
+        .map(|c| c.t)
+        .max()
+        .unwrap_or(0);
+    let first_activity = camera::extract_activities(&data.events, duration).first().map_or(u64::MAX, |a| a.t);
+    let start = spec::START_GUARD_MS.max(settled).min(first_activity);
+    let end = duration.saturating_sub(spec::END_GUARD_MS).max(start + 1);
+    Trim { start_ms: start, end_ms: end }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::camera::FocusMode;
+    use crate::changes::{ChangeRect, FrameChange, Rect};
+    use crate::config::{RecordingEvent, RecordingMeta};
+
+    fn data(duration_ms: u64, events: Vec<RecordingEvent>, changes: Vec<FrameChange>) -> RecordingData {
+        RecordingData {
+            dir: Default::default(),
+            meta: RecordingMeta {
+                version: 2,
+                id: "t".into(),
+                screen_width: 1920,
+                screen_height: 1080,
+                fps: 60,
+                start_time: String::new(),
+                duration_ms,
+                has_audio: false,
+                monitor_scale: 1.0,
+                recording_dir: String::new(),
+                recording_mode: None,
+                window_title: None,
+                window_initial_rect: None,
+                frame_count: Some(0),
+            },
+            events,
+            frame_times: vec![],
+            changes,
+        }
+    }
+
+    fn big_change(t: u64) -> FrameChange {
+        FrameChange { t, rects: vec![ChangeRect { rect: Rect::new(100.0, 200.0, 1000.0, 900.0), cells: 1400 }] }
+    }
+
+    #[test]
+    fn test_auto_trim_cuts_start_and_stop_operations() {
+        // Snappi のウィンドウが 1124ms のフレームで消える
+        let d = data(17_000, vec![], vec![big_change(1124), big_change(6000)]);
+        assert_eq!(auto_trim(&d), Trim { start_ms: 1124, end_ms: 15_500 });
+        // 大きな変化が無ければ開始ガード分
+        let d = data(17_000, vec![], vec![]);
+        assert_eq!(auto_trim(&d), Trim { start_ms: 1000, end_ms: 15_500 });
+    }
+
+    #[test]
+    fn test_auto_trim_keeps_first_activity_and_short_recordings() {
+        let click = RecordingEvent::Click { t: 1100, btn: "left".into(), x: 1.0, y: 1.0 };
+        let d = data(17_000, vec![click], vec![big_change(2000)]);
+        assert_eq!(auto_trim(&d).start_ms, 1100);
+        assert_eq!(auto_trim(&data(4000, vec![], vec![])), Trim::full(4000));
+    }
 
     fn segment(start_ms: u64, end_ms: u64) -> ZoomSegment {
         ZoomSegment { id: format!("auto-{}", start_ms), start_ms, end_ms, zoom: None, focus: FocusMode::Auto }

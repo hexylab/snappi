@@ -1,8 +1,9 @@
 # カメラ評価用の録画データ (Issue #28)
 
-各ディレクトリが1つの評価シナリオ。仕様とシナリオの一覧は `docs/camera-spec-v5.md` を参照。
+各ディレクトリが1つの評価シナリオ。仕様とシナリオの一覧は `docs/camera-spec-v6.md` を参照。
 
-- 録画ディレクトリと同じ形式（`meta.json` / `events.jsonl` / `ui_events.jsonl` / `window_rects.jsonl` / `frame_timestamps.txt`）。
+- 録画ディレクトリと同じ形式（`meta.json` / `events.jsonl` / `ui_events.jsonl` / `window_rects.jsonl` / `frame_timestamps.txt` /
+  `changes.jsonl`（画面の変化領域）/ `window_events.jsonl`（ウィンドウタイトルは消す））。
   **`frames/` と `audio.wav` はコミットしない**（`--debug-video` で目視確認するときは手元の録画を使う）。
 - `expect.json` にシナリオ固有の期待値を書く。
 - `expect.json` に `"synthetic": true` があるシナリオは `../gen_synthetic.py` で生成した合成データ。
@@ -38,7 +39,8 @@ Snappi（`npm run tauri dev` か、ビルド済みのアプリ）で、下の表
 python testdata/import_recording.py latest vscode-typing
 ```
 
-`frames/` と `audio.wav` を除いてコピーし、`meta.json` のローカルパスを消し、`expect.json` の下書き
+`frames/` と `audio.wav` を除いてコピーし（`changes.jsonl` が無ければ先に frames から作る。`window_events.jsonl` は
+ウィンドウタイトルを消す）、`meta.json` のローカルパスを消し、`expect.json` の下書き
 （`snappi-eval --draft-expect`、仕様 R1〜R5 から求めた期待値）を書き出して、メトリクスを表示する。
 
 ### 3. 確認してコミットする
@@ -49,7 +51,9 @@ python testdata/import_recording.py latest vscode-typing
   入っていることを確かめる。
 - カメラの動きは手元の録画（frames あり）で目視確認できる:
   `cd src-tauri && cargo run --release --bin snappi-eval -- <録画ディレクトリ> --debug-video out.mp4`
-- 8 シナリオすべてを置き換えたら、ベースラインを再計測して `docs/camera-spec-v5.md` の §9 を更新する:
+- `expect.json` の下書きは時間帯と visible だけ。**`framed`（主役の矩形が枠内）と `within`（枠がウィンドウ内）は、
+  録画フレームを見て「編集者ならこう映す」を人が書き足す**（エンジンの出力から書き写さない）。
+- シナリオを置き換えたら、結果を再計測して `docs/camera-spec-v6.md` の §11 を更新する:
 
 ```bash
 cd src-tauri

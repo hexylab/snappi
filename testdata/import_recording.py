@@ -4,8 +4,9 @@
     python testdata/import_recording.py <録画ディレクトリ | 録画ID | latest> <シナリオ名>
 
 - 録画ディレクトリから小さいファイル（meta.json / events.jsonl / ui_events.jsonl /
-  window_rects.jsonl / frame_timestamps.txt）だけをコピーする。frames/ と audio.wav、
-  ズーム計算に使わない window_events.jsonl（ウィンドウタイトルを含む）はコピーしない。
+  window_rects.jsonl / frame_timestamps.txt / changes.jsonl）だけをコピーする。frames/ と audio.wav はコピーしない。
+- changes.jsonl（画面の変化領域, Issue #39）が無ければ、コピー前に frames から作る（`snappi-eval --changes`）。
+- window_events.jsonl（前面ウィンドウの矩形）はウィンドウタイトルを消してコピーする。
 - meta.json の recording_dir（ユーザー名を含むローカルパス）は空にする。
 - `snappi-eval --draft-expect` で expect.json の下書きを作る（description は既存のものを引き継ぐ）。
 - 取り込み後に、コミット前に確認すべき UI 要素名の一覧とメトリクスを表示する。
@@ -24,9 +25,10 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "testdata" / "recordings"
 MANIFEST = ROOT / "src-tauri" / "Cargo.toml"
 RECORDINGS = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "Snappi" / "recordings"
-COPY_FILES = ["events.jsonl", "ui_events.jsonl", "window_rects.jsonl", "frame_timestamps.txt"]
+COPY_FILES = ["events.jsonl", "ui_events.jsonl", "window_rects.jsonl", "frame_timestamps.txt", "changes.jsonl"]
+WINDOW_EVENTS = "window_events.jsonl"
 # コピー先に残っていると取り込んだ録画と食い違うファイル（合成データの残り等）
-DATA_FILES = ["meta.json", *COPY_FILES]
+DATA_FILES = ["meta.json", *COPY_FILES, WINDOW_EVENTS]
 
 
 def resolve_source(arg):
@@ -48,6 +50,22 @@ def snappi_eval(*args):
     return subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
+def copy_signals(src, dest):
+    """changes.jsonl（無ければ作る）と、タイトルを消した window_events.jsonl をコピーする"""
+    if not (src / "changes.jsonl").exists() and (src / "frames").is_dir():
+        snappi_eval(str(src), "--changes")
+    if (src / "changes.jsonl").exists():
+        shutil.copyfile(src / "changes.jsonl", dest / "changes.jsonl")
+    if (src / WINDOW_EVENTS).exists():
+        lines = []
+        for line in (src / WINDOW_EVENTS).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                e = json.loads(line)
+                e["title"] = ""
+                lines.append(json.dumps(e, ensure_ascii=False, separators=(",", ":")))
+        (dest / WINDOW_EVENTS).write_text("".join(l + "\n" for l in lines), encoding="utf-8", newline="\n")
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
@@ -64,6 +82,7 @@ def main():
     for fname in COPY_FILES:
         if (src / fname).exists():
             shutil.copyfile(src / fname, dest / fname)
+    copy_signals(src, dest)
     print(f"{src} -> {dest}")
     print(f"  {meta['screen_width']}x{meta['screen_height']} / {meta['duration_ms'] / 1000:.1f}秒 / "
           f"モード {meta.get('recording_mode') or 'display'}")

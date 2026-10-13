@@ -230,6 +230,12 @@ impl RecordingSession {
         let _ = std::fs::remove_file(self.recording_dir.join("dimensions.txt"));
         let _ = std::fs::remove_file(self.recording_dir.join("frame_count.txt"));
 
+        // 画面の変化領域を求めておく（自動ズームの主役の手がかり, Issue #39）。
+        // 失敗しても録画は使える（プレビューを開くときに作り直す）ので警告だけにする
+        if let Err(e) = crate::changes::generate(&self.recording_dir) {
+            log::warn!("changes.jsonl を作れません: {:#}", e);
+        }
+
         Ok(())
     }
 
