@@ -69,10 +69,19 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
        Audio → audio.wav
        Metadata → meta.json, dimensions.txt
 
-[エクスポート] Events → camera::auto_segments（ZoomSegment 列。プレビューで編集したものを渡すことも可）
+[エクスポート] project.json の ZoomSegment 列とトリム（無ければ camera::auto_segments で自動生成・録画全体）
               → camera::camera_track（出力フレームごとの CameraState）
               → Compositor（CameraState のビューポートで切り抜き・カーソル等を合成）→ FFmpeg → MP4/GIF/WebM
 ```
+
+### プレビュー (Issue #30)
+
+- 方針: **自動の結果で完成形に近いこと**を優先し、編集は「区間の削除・端の伸縮・トリム・Undo」だけに絞る。
+- 開くと `load_project`（無ければ自動生成して保存）→ 完成形を自動再生。編集はデバウンスして `save_project`。
+- `src/lib/previewRenderer.ts` が書き出しと同じ合成（背景・影・角丸・カーソル・クリックリング・キー表示）を
+  canvas に描く。スタイル・時系列・カーソル画像は `get_preview_data`（`export/preview.rs`）が
+  書き出しと同じ計算（`OutputStyle`・`EffectTimeline`・`Compositor` のスプライト）から返す。
+  カメラは `get_camera_track`。合成を変えたら両方を揃えること。
 
 カメラエンジンは `src-tauri/src/camera/`:
 - `segments.rs`: 区間の自動生成（仕様 R1〜R5, F5）。純粋関数
@@ -121,6 +130,7 @@ SolidJS (src/lib/commands.ts)
 ├── window_events.jsonl   # 前面ウィンドウの変化（ズーム計算には未使用）
 ├── window_rects.jsonl    # ウィンドウ録画時のみ。矩形が変化したら {"t","rect":[l,t,r,b]}
 ├── audio.wav
+├── project.json          # プレビューの編集内容（区間・トリム。`project::Project`）。書き出しはこれを使う
 └── meta.json             # frame_count を含む（dimensions.txt / frame_count.txt は停止時に統合・削除）
 ```
 
@@ -146,5 +156,6 @@ Rust側の型は `src-tauri/src/config/mod.rs` に集約。TypeScript側は以�
 `ZoomStrength`: `Off | Subtle(1.5x) | Standard(1.8x, 既定) | Strong(2.2x)`（`EffectsSettings.zoom_strength`）
 `ZoomSegment`: `{ id, start_ms, end_ms, zoom: Option<f64>, focus: Auto | Fixed { x, y } }`（`camera::segments`）
 `CameraTrack`: `{ fps, frames: Vec<CameraState { center_x, center_y, zoom }> }`（`camera`）
+`Project`: `{ version, segments, trim: { start_ms, end_ms }, zoom_strength: Option }`（`project.rs`、project.json）
 `ExportFormat`: `Mp4 | Gif | WebM`
 `QualityPreset`: `Social(1080p/30fps) | HighQuality(元解像度/60fps) | Lightweight(720p/24fps)`

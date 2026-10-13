@@ -11,6 +11,8 @@ import type {
 } from "./types";
 import type { ZoomSegment } from "./generated/ZoomSegment";
 import type { CameraTrack } from "./generated/CameraTrack";
+import type { PreviewData } from "./generated/PreviewData";
+import type { Project } from "./generated/Project";
 
 export async function startRecording(): Promise<void> {
   return invoke("start_recording");
@@ -36,19 +38,13 @@ export async function getRecordingsList(): Promise<RecordingInfo[]> {
   return invoke("get_recordings_list");
 }
 
-/** 録画を書き出す。segments が null なら設定のズーム強さで区間を自動生成する */
+/** 録画を書き出す。ズーム区間とトリムは project.json（saveProject で保存した内容）を使う */
 export async function exportRecording(
   recordingId: string,
   format: ExportFormat,
   quality: QualityPreset,
-  segments: ZoomSegment[] | null,
 ): Promise<void> {
-  return invoke("export_recording", {
-    recordingId,
-    format,
-    quality,
-    segments,
-  });
+  return invoke("export_recording", { recordingId, format, quality });
 }
 
 export async function getExportProgress(): Promise<ExportProgress | null> {
@@ -77,11 +73,6 @@ export async function listWindows(): Promise<WindowInfo[]> {
   return invoke("list_windows");
 }
 
-/** 設定のズーム強さで自動生成したズーム区間 */
-export async function getAutoSegments(recordingId: string): Promise<ZoomSegment[]> {
-  return invoke("get_auto_segments", { recordingId });
-}
-
 /** ズーム区間からプレビュー用のカメラトラック（30fps）を求める */
 export async function getCameraTrack(
   recordingId: string,
@@ -94,4 +85,21 @@ export async function getRecordingEvents(
   recordingId: string
 ): Promise<TimelineEvent[]> {
   return invoke("get_recording_events", { recordingId });
+}
+
+/** 録画の編集内容（project.json）。無ければ自動生成した区間で作られる */
+export async function loadProject(recordingId: string): Promise<Project> {
+  return invoke("load_project", { recordingId });
+}
+
+export async function saveProject(recordingId: string, project: Project): Promise<void> {
+  return invoke("save_project", { recordingId, project });
+}
+
+/** プレビューの合成に使うデータ（quality で書き出すときと同じ見た目） */
+export async function getPreviewData(
+  recordingId: string,
+  quality: QualityPreset,
+): Promise<PreviewData> {
+  return invoke("get_preview_data", { recordingId, quality });
 }

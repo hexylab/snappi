@@ -83,6 +83,8 @@ pub struct StyleSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum BackgroundConfig {
     Gradient {
         from: [u8; 3],

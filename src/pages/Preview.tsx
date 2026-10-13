@@ -1,18 +1,24 @@
-import { createSignal, createEffect, createMemo, onMount, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { exportRecording, getAutoSegments, getCameraTrack, getRecordingsList } from "../lib/commands";
-import type { ExportFormat, ExportProgress, QualityPreset, RecordingInfo } from "../lib/types";
-import type { CameraTrack } from "../lib/generated/CameraTrack";
 import {
-  type ZoomSegment,
-  fromBackendSegment,
-  toBackendSegment,
-  DEFAULT_ZOOM,
-  DEFAULT_SEGMENT_DURATION_MS,
-  generateSegmentId,
-} from "../lib/zoomSegments";
+  exportRecording,
+  getCameraTrack,
+  getPreviewData,
+  getRecordingEvents,
+  getRecordingsList,
+  getSettings,
+  loadProject,
+  saveProject,
+} from "../lib/commands";
+import type { ExportFormat, ExportProgress, QualityPreset, RecordingInfo, TimelineEvent } from "../lib/types";
+import type { CameraTrack } from "../lib/generated/CameraTrack";
+import type { Project } from "../lib/generated/Project";
+import type { ZoomStrength } from "../lib/generated/ZoomStrength";
+import { createHistory } from "../lib/history";
+import { PreviewRenderer } from "../lib/previewRenderer";
+import { type EditState, formatTime, sortSegments } from "../lib/segments";
 import ExportButtons from "../components/ExportButtons";
-import SegmentEditor from "../components/SegmentEditor";
 import Timeline from "../components/Timeline";
 import VideoPlayer from "../components/VideoPlayer";
 
@@ -22,99 +28,183 @@ interface Props {
   onRedo: () => void;
 }
 
-export default function Preview(props: Props) {
-  const [exporting, setExporting] = createSignal(false);
-  const [exportedPath, setExportedPath] = createSignal<string | null>(null);
-  const [quality, setQuality] = createSignal<QualityPreset>("Social");
-  const [error, setError] = createSignal<string | null>(null);
-  const [recordingInfo, setRecordingInfo] = createSignal<RecordingInfo | null>(null);
-  const [exportProgress, setExportProgress] = createSignal<ExportProgress | null>(null);
-  const [showTimeline, setShowTimeline] = createSignal(false);
-  const [seekTimeMs, setSeekTimeMs] = createSignal<number | undefined>(undefined);
-  const [currentTimeMs, setCurrentTimeMs] = createSignal(0);
-  const [showZoomOverlay, setShowZoomOverlay] = createSignal(true);
-  const [showZoomPreview, setShowZoomPreview] = createSignal(false);
-  const [editMode, setEditMode] = createSignal<"position" | null>(null);
+/** 編集してから自動保存するまでの待ち時間 (ms) */
+const SAVE_DEBOUNCE_MS = 500;
+/** 区間を編集してからカメラトラックを求め直すまでの待ち時間 (ms) */
+const TRACK_DEBOUNCE_MS = 150;
 
-  // --- セグメントベースのstate ---
-  const [segments, setSegments] = createSignal<ZoomSegment[]>([]);
-  /** 自動生成した区間を読み込めたか。読み込めていなければ書き出し時にバックエンドで自動生成させる */
-  const [segmentsLoaded, setSegmentsLoaded] = createSignal(false);
-  const [selectedSegmentId, setSelectedSegmentId] = createSignal<number | null>(null);
-  /** ズームプレビュー用のカメラトラック（区間を変えるたびにバックエンドで再計算） */
+/** ズーム強さごとの倍率（src-tauri/src/camera/spec.rs）。Off でも手動の区間は標準の倍率で寄る */
+const STRENGTH_ZOOM: Record<ZoomStrength, number> = { Off: 1.8, Subtle: 1.5, Standard: 1.8, Strong: 2.2 };
+
+export default function Preview(props: Props) {
+  const [recordingInfo, setRecordingInfo] = createSignal<RecordingInfo | null>(null);
+  const [project, setProject] = createSignal<Project | null>(null);
+  const [settingsStrength, setSettingsStrength] = createSignal<ZoomStrength>("Standard");
+  const [events, setEvents] = createSignal<TimelineEvent[]>([]);
+  const [quality, setQuality] = createSignal<QualityPreset>("Social");
+  const [renderer, setRenderer] = createSignal<PreviewRenderer | null>(null);
   const [cameraTrack, setCameraTrack] = createSignal<CameraTrack | null>(null);
 
-  // 選択中のセグメント
-  const selectedSegment = createMemo(() => {
-    const id = selectedSegmentId();
-    if (id === null) return null;
-    return segments().find(s => s.id === id) ?? null;
-  });
+  const [timeMs, setTimeMs] = createSignal(0);
+  const [playing, setPlaying] = createSignal(false);
+  const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const [saveState, setSaveState] = createSignal<"saved" | "saving" | "error">("saved");
 
-  // 選択中セグメントのindex
-  const selectedSegmentIndex = createMemo(() => {
-    const id = selectedSegmentId();
-    if (id === null) return -1;
-    return segments().findIndex(s => s.id === id);
-  });
+  const [exporting, setExporting] = createSignal(false);
+  const [exportedPath, setExportedPath] = createSignal<string | null>(null);
+  const [exportProgress, setExportProgress] = createSignal<ExportProgress | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
 
-  let unlistenProgress: UnlistenFn | undefined;
-  let unlistenComplete: UnlistenFn | undefined;
-  let unlistenError: UnlistenFn | undefined;
+  const history = createHistory<EditState>({ segments: [], trim: { start_ms: 0, end_ms: 0 } });
+  const segments = () => history.present().segments;
+  const trim = () => history.present().trim;
+  const durationMs = () => recordingInfo()?.duration_ms ?? 0;
+  const defaultZoom = () => STRENGTH_ZOOM[project()?.zoom_strength ?? settingsStrength()];
+
+
+  // --- 読み込み ---
 
   onMount(async () => {
-    if (props.recordingId) {
-      try {
-        const recordings = await getRecordingsList();
-        const rec = recordings.find((r) => r.id === props.recordingId);
-        if (rec) setRecordingInfo(rec);
-      } catch (e) {
-        console.error("Failed to load recording info:", e);
-      }
-
-      // 自動生成したズーム区間を編集用の区間に変換
-      try {
-        const rec = recordingInfo();
-        const segs = await getAutoSegments(props.recordingId);
-        setSegments(segs.map((s) => fromBackendSegment(s, rec?.screen_width ?? 1920, rec?.screen_height ?? 1080)));
-        setSegmentsLoaded(true);
-      } catch (e) {
-        console.error("Failed to load zoom segments:", e);
-      }
+    const id = props.recordingId;
+    if (!id) return;
+    try {
+      const [recordings, loaded, settings] = await Promise.all([
+        getRecordingsList(),
+        loadProject(id),
+        getSettings(),
+      ]);
+      setRecordingInfo(recordings.find((r) => r.id === id) ?? null);
+      setSettingsStrength(settings.effects.zoom_strength);
+      setQuality(settings.output.default_quality);
+      setProject(loaded);
+      const state = { segments: sortSegments(loaded.segments), trim: loaded.trim };
+      lastSaved = state;
+      history.reset(state);
+      setTimeMs(loaded.trim.start_ms);
+    } catch (e) {
+      setError(`読み込みに失敗しました: ${e}`);
     }
+    getRecordingEvents(id).then(setEvents).catch((e) => console.error("get_recording_events failed:", e));
+  });
 
-    unlistenProgress = await listen<ExportProgress>("export-progress", (event) => {
-      setExportProgress(event.payload);
-    });
-    unlistenComplete = await listen<{ output_path: string }>("export-complete", (event) => {
-      setExporting(false);
-      setExportProgress(null);
-      setExportedPath(event.payload.output_path);
-    });
-    unlistenError = await listen<{ message: string }>("export-error", (event) => {
-      setExporting(false);
-      setExportProgress(null);
-      setError(event.payload.message);
-    });
+  // 画質プリセットに合わせて合成用データを読み込む（出力サイズでカーソル等の相対的な大きさが変わる）
+  let previewRequest = 0;
+  createEffect(() => {
+    const id = props.recordingId;
+    const rec = recordingInfo();
+    const q = quality();
+    if (!id || !rec) return;
+    const request = ++previewRequest;
+    getPreviewData(id, q)
+      .then(async (data) => {
+        const r = new PreviewRenderer(data, rec.recording_dir);
+        await r.init();
+        if (request === previewRequest) setRenderer(r);
+      })
+      .catch((e) => setError(`プレビューの準備に失敗しました: ${e}`));
+  });
+
+  // 区間を編集したらカメラトラックを求め直す
+  let trackRequest = 0;
+  let trackTimer: number | undefined;
+  createEffect(() => {
+    const segs = segments();
+    const id = props.recordingId;
+    if (!id || !project()) return;
+    clearTimeout(trackTimer);
+    const request = ++trackRequest;
+    trackTimer = window.setTimeout(() => {
+      getCameraTrack(id, segs)
+        .then((track) => {
+          if (request === trackRequest) setCameraTrack(track);
+        })
+        .catch((e) => console.error("get_camera_track failed:", e));
+    }, untrack(cameraTrack) ? TRACK_DEBOUNCE_MS : 0);
+  });
+
+  // 準備ができたら操作なしで完成形を再生する
+  let autoplayed = false;
+  createEffect(() => {
+    if (autoplayed || !renderer() || !cameraTrack()) return;
+    autoplayed = true;
+    setTimeMs(trim().start_ms);
+    setPlaying(true);
+  });
+
+  // --- 自動保存 ---
+
+  let lastSaved: EditState | null = null;
+  let saveTimer: number | undefined;
+
+  const saveNow = async () => {
+    clearTimeout(saveTimer);
+    saveTimer = undefined;
+    const id = props.recordingId;
+    const base = project();
+    const state = history.present();
+    if (!id || !base || state === lastSaved) return;
+    setSaveState("saving");
+    try {
+      await saveProject(id, { ...base, segments: state.segments, trim: state.trim });
+      lastSaved = state;
+      setSaveState(history.present() === state ? "saved" : "saving");
+    } catch (e) {
+      console.error("save_project failed:", e);
+      setSaveState("error");
+    }
+  };
+
+  createEffect(
+    on(
+      history.present,
+      (state) => {
+        if (state === lastSaved || !project()) return;
+        setSaveState("saving");
+        clearTimeout(saveTimer);
+        saveTimer = window.setTimeout(saveNow, SAVE_DEBOUNCE_MS);
+      },
+      { defer: true },
+    ),
+  );
+
+  // --- 書き出し ---
+
+  let unlisteners: UnlistenFn[] = [];
+  onMount(async () => {
+    unlisteners = await Promise.all([
+      listen<ExportProgress>("export-progress", (event) => setExportProgress(event.payload)),
+      listen<{ output_path: string }>("export-complete", (event) => {
+        setExporting(false);
+        setExportProgress(null);
+        setExportedPath(event.payload.output_path);
+      }),
+      listen<{ message: string }>("export-error", (event) => {
+        setExporting(false);
+        setExportProgress(null);
+        setError(event.payload.message);
+      }),
+    ]);
   });
 
   onCleanup(() => {
-    unlistenProgress?.();
-    unlistenComplete?.();
-    unlistenError?.();
+    unlisteners.forEach((u) => u());
+    clearTimeout(trackTimer);
+    void saveNow();
   });
 
   const handleExport = async (format: ExportFormat) => {
-    if (!props.recordingId) return;
-    const rec = recordingInfo();
-    if (!rec) return;
+    const id = props.recordingId;
+    if (!id) return;
+    setPlaying(false);
     setExporting(true);
     setError(null);
     setExportedPath(null);
     setExportProgress({ stage: "starting", progress: 0, output_path: null });
     try {
-      const segs = segmentsLoaded() ? segments().map(toBackendSegment) : null;
-      await exportRecording(props.recordingId, format, quality(), segs);
+      // 書き出しは project.json を読むので、編集内容を先に保存する
+      await saveNow();
+      if (saveState() === "error") throw new Error("編集内容を保存できませんでした");
+      await exportRecording(id, format, quality());
     } catch (e) {
       setError(String(e));
       setExporting(false);
@@ -122,278 +212,223 @@ export default function Preview(props: Props) {
     }
   };
 
+  const handleClose = async () => {
+    setPlaying(false);
+    await saveNow();
+    props.onClose();
+  };
+
   const progressLabel = () => {
     const p = exportProgress();
     if (!p) return "";
     switch (p.stage) {
-      case "composing": return `エフェクト合成中... ${Math.round(p.progress * 100)}%`;
-      case "encoding": return "エンコード中...";
-      case "complete": return "完了";
-      default: return "準備中...";
+      case "composing":
+        return `エフェクト合成中... ${Math.round(p.progress * 100)}%`;
+      case "encoding":
+        return "エンコード中...";
+      case "complete":
+        return "完了";
+      default:
+        return "準備中...";
     }
   };
 
-  // --- ズームプレビュー: 区間が変わったらカメラトラックを再計算 ---
-  let trackRequest = 0;
-  createEffect(() => {
-    const segs = segments().map(toBackendSegment);
-    if (!showZoomPreview() || !props.recordingId) return;
-    const request = ++trackRequest;
-    getCameraTrack(props.recordingId, segs)
-      .then((track) => {
-        if (request === trackRequest) setCameraTrack(track);
-      })
-      .catch((e) => console.error("get_camera_track failed:", e));
-  });
+  // --- 再生 ---
 
-  // --- セグメント選択時の自動シーク ---
-  createEffect(() => {
-    const seg = selectedSegment();
-    if (seg) {
-      setSeekTimeMs(seg.startMs);
-      if (!showZoomOverlay()) setShowZoomOverlay(true);
-    }
-  });
-
-  // --- セグメント操作関数 ---
-
-  const updateSegment = (id: number, updates: Partial<ZoomSegment>) => {
-    setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+  const seek = (ms: number) => {
+    setPlaying(false);
+    setTimeMs(Math.max(0, Math.min(durationMs(), ms)));
   };
 
-  const addSegment = (timeMs: number) => {
+  const togglePlay = () => {
+    if (playing()) {
+      setPlaying(false);
+      return;
+    }
+    const t = timeMs();
+    if (t < trim().start_ms || t >= trim().end_ms - 50) setTimeMs(trim().start_ms);
+    setPlaying(true);
+  };
+
+  /** 1 フレーム（元の録画のフレーム）単位、または 1 秒単位で動かす */
+  const step = (dir: -1 | 1, bySecond: boolean) => {
+    const r = renderer();
+    if (bySecond || !r) {
+      seek(timeMs() + dir * 1000);
+      return;
+    }
+    const times = r.data.frame_times;
+    const idx = Math.max(0, Math.min(times.length - 1, r.frameIndexAt(timeMs()) + dir));
+    seek(times[idx] ?? timeMs());
+  };
+
+  // --- 編集 ---
+
+  const deleteSelected = () => {
+    const id = selectedId();
+    if (!id) return;
+    history.commit({ ...history.present(), segments: segments().filter((s) => s.id !== id) });
+    setSelectedId(null);
+  };
+
+  // --- キーボード ---
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (e.key === " ") {
+      e.preventDefault();
+      (document.activeElement as HTMLElement | null)?.blur();
+      togglePlay();
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      step(e.key === "ArrowLeft" ? -1 : 1, e.shiftKey);
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      deleteSelected();
+    } else if (ctrl && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey) history.redo();
+      else history.undo();
+    } else if (ctrl && e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      history.redo();
+    } else if (e.key === "Escape") {
+      setSelectedId(null);
+    }
+  };
+  window.addEventListener("keydown", handleKeyDown);
+  onCleanup(() => window.removeEventListener("keydown", handleKeyDown));
+
+  const audioSrc = () => {
+    const r = renderer();
     const rec = recordingInfo();
-    const durationMs = rec?.duration_ms ?? timeMs + DEFAULT_SEGMENT_DURATION_MS;
-
-    // 既存セグメントとの重なりチェック → 空きスロットに収める
-    const sorted = [...segments()].sort((a, b) => a.startMs - b.startMs);
-    let slotStart = timeMs;
-    let slotEnd = durationMs;
-
-    // timeMs以降で最初に来るセグメント = 右側の壁
-    const nextSeg = sorted.find(s => s.startMs > timeMs);
-    if (nextSeg) slotEnd = nextSeg.startMs;
-
-    // timeMsを含む or 直前のセグメント = 左側の壁
-    const prevSeg = [...sorted].reverse().find(s => s.endMs <= timeMs);
-    const overlapping = sorted.find(s => s.startMs <= timeMs && s.endMs > timeMs);
-    if (overlapping) {
-      // クリック位置が既存セグメント内 → その直後に配置
-      slotStart = overlapping.endMs;
-      if (slotStart >= slotEnd) return; // 空きなし
-    } else if (prevSeg) {
-      slotStart = Math.max(timeMs, prevSeg.endMs);
-    }
-
-    const endMs = Math.min(slotStart + DEFAULT_SEGMENT_DURATION_MS, slotEnd);
-    if (endMs - slotStart < 100) return; // 最小幅未満なら追加しない
-
-    // 中心は自動追従、倍率はズーム強さの既定値（手動で変更するまで）
-    const centerX = rec ? rec.screen_width / 2 : 960;
-    const centerY = rec ? rec.screen_height / 2 : 540;
-    const zoomLevel = DEFAULT_ZOOM;
-
-    const newSeg: ZoomSegment = {
-      id: generateSegmentId(),
-      startMs: slotStart,
-      endMs,
-      zoomLevel,
-      centerX,
-      centerY,
-    };
-    setSegments(prev => [...prev, newSeg].sort((a, b) => a.startMs - b.startMs));
-    setSelectedSegmentId(newSeg.id);
+    return r?.data.has_audio && rec ? convertFileSrc(`${rec.recording_dir}\\audio.wav`) : null;
   };
 
-  const deleteSegment = (id: number) => {
-    setSegments(prev => prev.filter(s => s.id !== id));
-    if (selectedSegmentId() === id) {
-      setSelectedSegmentId(null);
-      setEditMode(null);
-    }
-  };
-
-  const mergeSegments = (id1: number, id2: number) => {
-    const s1 = segments().find(s => s.id === id1);
-    const s2 = segments().find(s => s.id === id2);
-    if (!s1 || !s2) return;
-
-    // 手動で設定した中心・倍率はそちらを優先し、どちらも自動なら自動のまま
-    const centerSrc = s1.manualCenter ? s1 : s2.manualCenter ? s2 : s1;
-    const zoomSrc = s1.manualZoom ? s1 : s2.manualZoom ? s2 : s1;
-    const merged: ZoomSegment = {
-      id: s1.id,
-      startMs: Math.min(s1.startMs, s2.startMs),
-      endMs: Math.max(s1.endMs, s2.endMs),
-      zoomLevel: zoomSrc.zoomLevel,
-      centerX: centerSrc.centerX,
-      centerY: centerSrc.centerY,
-      manualCenter: s1.manualCenter || s2.manualCenter,
-      manualZoom: s1.manualZoom || s2.manualZoom,
-    };
-    setSegments(prev =>
-      prev.filter(s => s.id !== id1 && s.id !== id2).concat(merged).sort((a, b) => a.startMs - b.startMs)
-    );
-  };
-
-  const handleVideoClick = (screenX: number, screenY: number) => {
-    const id = selectedSegmentId();
-    if (id === null) return;
-    // 中心位置を手動設定したのでフラグを立てる
-    updateSegment(id, { centerX: screenX, centerY: screenY, manualCenter: true });
-    setEditMode(null);
-  };
-
-  const navigateSegment = (dir: -1 | 1) => {
-    const segs = segments();
-    const idx = selectedSegmentIndex();
-    const newIdx = idx + dir;
-    if (newIdx >= 0 && newIdx < segs.length) {
-      setSelectedSegmentId(segs[newIdx].id);
-    }
-  };
+  const toolButton =
+    "px-2 py-1 rounded-md text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent transition-colors";
 
   return (
     <div class="flex flex-col h-screen">
-      <header class="flex items-center justify-between px-6 py-3 border-b border-slate-700/50">
-        <h2 class="text-lg font-semibold text-white">プレビュー</h2>
-        <button onClick={props.onClose} class="p-2 rounded-lg hover:bg-slate-800 transition-colors text-slate-400">
+      <header class="flex items-center justify-between px-6 py-2.5 border-b border-slate-700/50">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-white">プレビュー</h2>
+          <span class="text-[11px] text-slate-500">
+            {saveState() === "saving" ? "保存中..." : saveState() === "error" ? "保存に失敗しました" : "編集内容は自動保存されます"}
+          </span>
+        </div>
+        <button onClick={handleClose} class="p-2 rounded-lg hover:bg-slate-800 transition-colors text-slate-400">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       </header>
 
-      {/* メインコンテンツ: 動画エディタ風レイアウト
-          - Video Player: 中央寄せで max-w-7xl（視聴体験のため大きすぎない）
-          - Timeline: ウィンドウ幅いっぱいに広げて編集しやすく */}
-      <div class="flex-1 overflow-y-auto">
-        <div class="pt-4 pb-3 space-y-3 w-full">
-          {/* Video Player: 中央寄せエリア */}
-          <div class="px-6 max-w-7xl mx-auto w-full">
-          <Show
-            when={recordingInfo()}
-            fallback={
-              <div class="aspect-video bg-slate-800 rounded-xl border border-slate-700/50 flex items-center justify-center">
-                <Show when={props.recordingId} fallback={<p class="text-slate-500">録画が選択されていません</p>}>
-                  <div class="text-center">
-                    <svg class="w-12 h-12 mx-auto mb-2 text-slate-600 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" />
-                    </svg>
-                    <p class="text-slate-500 text-sm">読み込み中...</p>
-                  </div>
-                </Show>
-              </div>
-            }
-          >
-            {(rec) => (
-              <VideoPlayer
-                recordingDir={rec().recording_dir}
-                frameCount={rec().frame_count}
-                durationMs={rec().duration_ms}
-                cameraTrack={cameraTrack()}
-                segments={segments()}
-                selectedSegment={selectedSegment()}
-                seekToTimeMs={seekTimeMs()}
-                onTimeChange={(t) => setCurrentTimeMs(t)}
-                screenWidth={rec().screen_width}
-                screenHeight={rec().screen_height}
-                showZoomOverlay={showZoomOverlay()}
-                showZoomPreview={showZoomPreview()}
-                editMode={editMode()}
-                onVideoClick={handleVideoClick}
-              />
-            )}
-          </Show>
-          </div>{/* /Video Player 中央寄せエリア */}
-
-          {/* Timeline section: ウィンドウ幅いっぱいで編集しやすく（動画エディタ風） */}
-          <Show when={recordingInfo() && recordingInfo()!.duration_ms > 0}>
-            <div class="mx-2 border border-slate-700/50 rounded-lg overflow-hidden">
-              {/* Header with toggle */}
-              <div class="flex items-center justify-between px-4 py-2 bg-slate-800/50">
-                <button
-                  onClick={() => setShowTimeline(!showTimeline())}
-                  class="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors"
-                >
-                  <svg
-                    class={`w-3 h-3 transition-transform ${showTimeline() ? "rotate-90" : ""}`}
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                  >
-                    <path d="M8 5l8 7-8 7z" />
-                  </svg>
-                  <span>詳細タイムライン</span>
-                </button>
-
-                <Show when={showTimeline()}>
-                  <div class="flex items-center gap-1.5">
-                    <button
-                      onClick={() => setShowZoomPreview(!showZoomPreview())}
-                      class={`text-[11px] px-2 py-0.5 rounded transition-colors ${
-                        showZoomPreview()
-                          ? "bg-blue-500/20 text-blue-300 hover:bg-blue-500/30"
-                          : "bg-slate-700/50 text-slate-500 hover:bg-slate-700"
-                      }`}
-                    >
-                      {showZoomPreview() ? "ズームプレビュー ON" : "ズームプレビュー OFF"}
-                    </button>
-                    <button
-                      onClick={() => setShowZoomOverlay(!showZoomOverlay())}
-                      class={`text-[11px] px-2 py-0.5 rounded transition-colors ${
-                        showZoomOverlay()
-                          ? "bg-orange-500/20 text-orange-300 hover:bg-orange-500/30"
-                          : "bg-slate-700/50 text-slate-500 hover:bg-slate-700"
-                      }`}
-                    >
-                      {showZoomOverlay() ? "中心表示 ON" : "中心表示 OFF"}
-                    </button>
-                  </div>
-                </Show>
-              </div>
-
-              <Show when={showTimeline()}>
-                <div class="px-4 py-3 border-t border-slate-700/30 space-y-3">
-                  <Timeline
-                    recordingId={props.recordingId!}
-                    durationMs={recordingInfo()!.duration_ms}
-                    screenWidth={recordingInfo()!.screen_width}
-                    screenHeight={recordingInfo()!.screen_height}
-                    currentTimeMs={currentTimeMs()}
-                    onSeekToTime={(ms) => setSeekTimeMs(ms)}
-                    segments={segments()}
-                    selectedSegmentId={selectedSegmentId()}
-                    onSelectSegment={(id) => setSelectedSegmentId(id)}
-                    onAddSegment={addSegment}
-                    onDeleteSegment={deleteSegment}
-                    onUpdateSegment={updateSegment}
-                    onMergeSegments={mergeSegments}
-                  />
-
-                  {/* SegmentEditor: セグメント選択時のみ表示 */}
-                  <Show when={selectedSegment() && selectedSegmentIndex() >= 0}>
-                    <SegmentEditor
-                      segment={selectedSegment()!}
-                      index={selectedSegmentIndex()}
-                      totalCount={segments().length}
-                      onChange={updateSegment}
-                      onDelete={deleteSegment}
-                      onClose={() => { setSelectedSegmentId(null); setEditMode(null); }}
-                      onNavigate={navigateSegment}
-                      editMode={editMode()}
-                      onToggleEditMode={setEditMode}
-                    />
-                  </Show>
-                </div>
-              </Show>
+      {/* 完成形のプレビュー */}
+      <div class="flex-1 min-h-0 px-6 pt-3">
+        <Show
+          when={renderer()}
+          fallback={
+            <div class="w-full h-full flex items-center justify-center text-slate-500 text-sm">
+              {props.recordingId ? "読み込み中..." : "録画が選択されていません"}
             </div>
-          </Show>
-        </div>
+          }
+        >
+          {(r) => (
+            <VideoPlayer
+              renderer={r()}
+              track={cameraTrack()}
+              timeMs={timeMs()}
+              playing={playing()}
+              trim={trim()}
+              audioSrc={audioSrc()}
+              onTimeChange={setTimeMs}
+              onEnded={() => setPlaying(false)}
+            />
+          )}
+        </Show>
       </div>
 
-      {/* 固定フッター: エクスポート + アクション（ウィンドウ幅いっぱい） */}
-      <footer class="flex-shrink-0 border-t border-slate-700/50 bg-slate-900/95 backdrop-blur-sm px-6 py-3">
-        <div class="max-w-7xl mx-auto space-y-2">
+      {/* 再生操作 */}
+      <div class="flex items-center gap-2 px-6 py-2">
+        <button onClick={() => step(-1, false)} class={toolButton} title="1フレーム戻る (←、Shift+←で1秒)">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+          </svg>
+        </button>
+        <button
+          onClick={togglePlay}
+          class="p-2 rounded-lg bg-slate-700/60 hover:bg-slate-600 text-white transition-colors"
+          title="再生 / 停止 (Space)"
+        >
+          <Show
+            when={playing()}
+            fallback={
+              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="6 4 20 12 6 20 6 4" />
+              </svg>
+            }
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" />
+              <rect x="14" y="4" width="4" height="16" />
+            </svg>
+          </Show>
+        </button>
+        <button onClick={() => step(1, false)} class={toolButton} title="1フレーム進む (→、Shift+→で1秒)">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+          </svg>
+        </button>
+        <span class="ml-2 font-mono text-xs text-slate-300">
+          {formatTime(timeMs())} <span class="text-slate-500">/ {formatTime(durationMs())}</span>
+        </span>
+        <span class="text-[11px] text-slate-500">
+          書き出す長さ {formatTime(trim().end_ms - trim().start_ms)}
+        </span>
+      </div>
+
+      {/* タイムラインと区間の設定 */}
+      <div class="px-6 pb-3 space-y-2">
+        <div class="flex items-center gap-1 border-t border-slate-700/50 pt-2">
+          <button class={toolButton} onClick={deleteSelected} disabled={!selectedId()} title="選択中のズーム区間を削除 (Delete)">
+            区間を削除
+          </button>
+          <button class={toolButton} onClick={() => history.undo()} disabled={!history.canUndo()} title="元に戻す (Ctrl+Z)">
+            元に戻す
+          </button>
+          <button class={toolButton} onClick={() => history.redo()} disabled={!history.canRedo()} title="やり直す (Ctrl+Shift+Z)">
+            やり直す
+          </button>
+          <span class="ml-auto text-[10px] text-slate-600">
+            ズームは自動です。不要な区間はクリックして削除、端のドラッグで伸縮、両端の黄色いハンドルで前後をカット
+          </span>
+        </div>
+
+        <Show when={durationMs() > 0}>
+          <Timeline
+            durationMs={durationMs()}
+            timeMs={timeMs()}
+            segments={segments()}
+            trim={trim()}
+            selectedId={selectedId()}
+            events={events()}
+            defaultZoom={defaultZoom()}
+            onSeek={seek}
+            onSelect={setSelectedId}
+            onEditBegin={() => history.begin()}
+            onEditPreview={(state) => history.preview(state)}
+            onEditEnd={() => history.end()}
+          />
+        </Show>
+
+      </div>
+
+      {/* 書き出し */}
+      <footer class="flex-shrink-0 border-t border-slate-700/50 bg-slate-900/95 px-6 py-3">
+        <div class="space-y-2">
           <div class="flex items-center gap-3">
             <select
               value={quality()}
@@ -408,16 +443,21 @@ export default function Preview(props: Props) {
             <ExportButtons onExport={handleExport} exporting={exporting()} />
 
             <div class="ml-auto flex gap-2">
-              <button onClick={props.onRedo} class="py-1.5 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors text-sm">
+              <button
+                onClick={props.onRedo}
+                class="py-1.5 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors text-sm"
+              >
                 再録画
               </button>
-              <button onClick={props.onClose} class="py-1.5 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors text-sm">
+              <button
+                onClick={handleClose}
+                class="py-1.5 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors text-sm"
+              >
                 閉じる
               </button>
             </div>
           </div>
 
-          {/* 進捗バー */}
           <Show when={exporting() && exportProgress()}>
             <div class="flex items-center gap-3">
               <span class="text-slate-300 text-sm whitespace-nowrap">{progressLabel()}</span>
@@ -427,9 +467,7 @@ export default function Preview(props: Props) {
                   style={{ width: `${Math.round((exportProgress()?.progress ?? 0) * 100)}%` }}
                 />
               </div>
-              <span class="text-slate-500 font-mono text-xs">
-                {Math.round((exportProgress()?.progress ?? 0) * 100)}%
-              </span>
+              <span class="text-slate-500 font-mono text-xs">{Math.round((exportProgress()?.progress ?? 0) * 100)}%</span>
             </div>
           </Show>
 

@@ -1,450 +1,262 @@
-import { createSignal, createMemo, Show, For, onMount } from "solid-js";
-import { getRecordingEvents } from "../lib/commands";
+import { createMemo, For } from "solid-js";
 import type { TimelineEvent } from "../lib/types";
-import type { ZoomSegment } from "../lib/zoomSegments";
-import ZoomTrack from "./ZoomTrack";
+import type { ZoomSegment } from "../lib/generated/ZoomSegment";
+import { type EditState, formatTime, resizeSegment, resizeTrim } from "../lib/segments";
 
 interface Props {
-  recordingId: string;
   durationMs: number;
-  screenWidth: number;
-  screenHeight: number;
-  currentTimeMs?: number;
-  onSeekToTime?: (timeMs: number) => void;
+  timeMs: number;
   segments: ZoomSegment[];
-  selectedSegmentId: number | null;
-  onSelectSegment: (id: number | null) => void;
-  onAddSegment: (timeMs: number) => void;
-  onDeleteSegment: (id: number) => void;
-  onUpdateSegment: (id: number, updates: Partial<ZoomSegment>) => void;
-  onMergeSegments: (id1: number, id2: number) => void;
-  onSegmentResizeEnd?: (id: number) => void;
+  trim: EditState["trim"];
+  selectedId: string | null;
+  /** 操作トラックに出すイベント（クリック・キー入力） */
+  events: TimelineEvent[];
+  /** zoom が null の区間の倍率（表示用） */
+  defaultZoom: number;
+  onSeek: (ms: number) => void;
+  onSelect: (id: string | null) => void;
+  /** ドラッグによる編集の開始・途中・終了（Undo はドラッグ 1 回を 1 件にまとめる） */
+  onEditBegin: () => void;
+  onEditPreview: (state: EditState) => void;
+  onEditEnd: () => void;
 }
 
-// 動画エディタ風に高めのレーン（編集しやすさ優先）
-const EVENT_LANE_HEIGHT = 48;
-const STATE_BAND_HEIGHT = 24;
+/** これ未満のマウス移動はクリックとみなす (px) */
+const DRAG_THRESHOLD_PX = 3;
+const MARKER_BUCKETS = 1000;
 
-const EVENT_LANE_Y = 0;
-const STATE_BAND_Y = EVENT_LANE_HEIGHT;
-
-type ZoomState = "fullscreen" | "workarea";
-
-interface StateSegment {
-  start_ms: number;
-  end_ms: number;
-  state: ZoomState;
-  zone_label: string;
-}
-
-const EVENT_TYPE_CONFIG: Record<string, { color: string; lane: number; label: string }> = {
-  click:        { color: "rgba(96,165,250,0.9)",  lane: 0, label: "Click" },
-  key:          { color: "rgba(74,222,128,0.9)",   lane: 1, label: "Key" },
-  scroll:       { color: "rgba(251,146,60,0.9)",   lane: 2, label: "Scroll" },
-  focus:        { color: "rgba(168,85,247,0.9)",   lane: 3, label: "Focus" },
-  window_focus: { color: "rgba(244,114,182,0.9)",  lane: 3, label: "WinFocus" },
+const MARKER_STYLE: Record<string, { color: string; y1: number; y2: number }> = {
+  click: { color: "rgba(96,165,250,0.9)", y1: 2, y2: 10 },
+  key: { color: "rgba(74,222,128,0.8)", y1: 12, y2: 20 },
 };
 
-const LANE_COUNT = 4;
-
-const ZOOM_LEVELS = [1, 2, 4, 8] as const;
-type ZoomLevel = typeof ZOOM_LEVELS[number];
-
 export default function Timeline(props: Props) {
-  const [events, setEvents] = createSignal<TimelineEvent[]>([]);
-  const [loading, setLoading] = createSignal(false);
-  const [hoveredEventIdx, setHoveredEventIdx] = createSignal<number | null>(null);
-  const [tooltipPos, setTooltipPos] = createSignal<{ x: number; y: number } | null>(null);
-  /** タイムラインの水平ズーム倍率。イベントが密集する長尺録画向け */
-  const [zoomLevel, setZoomLevel] = createSignal<ZoomLevel>(1);
-  let containerRef: HTMLDivElement | undefined;
-  let scrollRef: HTMLDivElement | undefined;
+  let tracksRef!: HTMLDivElement;
 
-  onMount(async () => {
-    setLoading(true);
-    try {
-      setEvents(await getRecordingEvents(props.recordingId));
-    } catch (e) {
-      console.error("Failed to load timeline data:", e);
-    }
-    setLoading(false);
-  });
-
-  const timeToX = (ms: number, width: number) =>
-    props.durationMs > 0 ? (ms / props.durationMs) * width : 0;
-
-  const eventDotY = (eventType: string) => {
-    const config = EVENT_TYPE_CONFIG[eventType];
-    if (!config) return EVENT_LANE_Y + 4;
-    const laneH = (EVENT_LANE_HEIGHT - 8) / LANE_COUNT;
-    return EVENT_LANE_Y + 4 + config.lane * laneH + laneH / 2;
+  const pct = (ms: number) => (props.durationMs > 0 ? (ms / props.durationMs) * 100 : 0);
+  const clientXToMs = (clientX: number) => {
+    const rect = tracksRef.getBoundingClientRect();
+    const r = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return r * props.durationMs;
   };
 
-  const visibleEvents = createMemo(() => {
-    const evts = events();
-    // 少数ならそのまま表示
-    if (evts.length < 500) return evts;
-    // ズームに応じて間引き解像度を上げる（2xズームなら 2000px 解像度で重複排除）
-    const W = 1000 * zoomLevel();
+  /** 時間軸の目盛り。幅に対して 8〜16 本程度になる間隔を選ぶ */
+  const ticks = createMemo(() => {
+    const steps = [500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000];
+    const step = steps.find((s) => props.durationMs / s <= 14) ?? 300000;
+    const out: { t: number; label: string }[] = [];
+    for (let t = 0; t <= props.durationMs; t += step) {
+      const sec = t / 1000;
+      const label = step % 1000 === 0
+        ? `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`
+        : formatTime(t);
+      out.push({ t, label });
+    }
+    return out;
+  });
+
+  /** 操作マーカー（同じ位置に重なるものは間引く） */
+  const markers = createMemo(() => {
     const seen = new Set<string>();
-    return evts.filter((evt) => {
-      const px = Math.round(timeToX(evt.time_ms, W));
-      const key = `${evt.event_type}:${px}`;
+    return props.events.filter((e) => {
+      if (!MARKER_STYLE[e.event_type]) return false;
+      const key = `${e.event_type}:${Math.round((e.time_ms / Math.max(1, props.durationMs)) * MARKER_BUCKETS)}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
   });
 
-  // セグメントからステート遷移を計算
-  const stateSegments = createMemo((): StateSegment[] => {
-    const segs = props.segments;
-    if (segs.length === 0) {
-      return [{ start_ms: 0, end_ms: props.durationMs, state: "fullscreen", zone_label: "全画面" }];
-    }
-
-    const sorted = [...segs].sort((a, b) => a.startMs - b.startMs);
-    const result: StateSegment[] = [];
-    let cursor = 0;
-    let waCounter = 0;
-
-    for (const seg of sorted) {
-      if (seg.startMs > cursor) {
-        result.push({ start_ms: cursor, end_ms: seg.startMs, state: "fullscreen", zone_label: "全画面" });
-      }
-      waCounter++;
-      result.push({
-        start_ms: seg.startMs,
-        end_ms: seg.endMs,
-        state: "workarea",
-        zone_label: `ズーム区間#${waCounter}`,
-      });
-      cursor = seg.endMs;
-    }
-    if (cursor < props.durationMs) {
-      result.push({ start_ms: cursor, end_ms: props.durationMs, state: "fullscreen", zone_label: "全画面" });
-    }
-    return result;
-  });
-
-  const currentState = createMemo(() => {
-    const t = props.currentTimeMs;
-    if (t === undefined) return null;
-    const segs = stateSegments();
-    for (const seg of segs) {
-      if (t >= seg.start_ms && t < seg.end_ms) return seg;
-    }
-    return segs.length > 0 ? segs[segs.length - 1] : null;
-  });
-
-  const stateColor = (state: ZoomState) => {
-    switch (state) {
-      case "fullscreen": return "rgba(100,116,139,0.5)";
-      case "workarea": return "rgba(168,85,247,0.6)";
-    }
+  /** マウスを押してから離すまでを追う。動かさずに離したら onClick */
+  const track = (
+    e: MouseEvent,
+    handlers: { onMove: (ev: MouseEvent) => void; onClick?: (ev: MouseEvent) => void; edit?: boolean },
+  ) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    let moved = false;
+    if (handlers.edit) props.onEditBegin();
+    const move = (ev: MouseEvent) => {
+      if (!moved && Math.abs(ev.clientX - startX) < DRAG_THRESHOLD_PX) return;
+      moved = true;
+      handlers.onMove(ev);
+    };
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (handlers.edit) props.onEditEnd();
+      if (!moved) handlers.onClick?.(ev);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
 
-  const formatTime = (ms: number) => {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const rem = s % 60;
-    const frac = Math.floor((ms % 1000) / 100);
-    return `${m}:${rem.toString().padStart(2, "0")}.${frac}`;
+  /** 目盛り・空いている場所: クリック・ドラッグで再生位置を動かす */
+  const scrub = (e: MouseEvent, deselect: boolean) => {
+    if (e.button !== 0) return;
+    if (deselect) props.onSelect(null);
+    props.onSeek(clientXToMs(e.clientX));
+    track(e, { onMove: (ev) => props.onSeek(clientXToMs(ev.clientX)) });
   };
 
-  const getZoomAtTime = (timeMs: number) => {
-    for (const seg of props.segments) {
-      if (timeMs >= seg.startMs && timeMs <= seg.endMs) return seg.zoomLevel;
-    }
-    return 1.0;
+  /** 区間をクリック: 選択してその位置へ移動する */
+  const selectSegment = (e: MouseEvent, seg: ZoomSegment) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    props.onSelect(seg.id);
+    props.onSeek(clientXToMs(e.clientX));
   };
 
-  const handleClick = (e: MouseEvent) => {
-    if (!containerRef) return;
-    const rect = containerRef.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const timeMs = Math.round(pct * props.durationMs);
-    props.onSeekToTime?.(timeMs);
+  const dragSegmentEdge = (e: MouseEvent, seg: ZoomSegment, edge: "start" | "end") => {
+    const base = props.segments;
+    const trim = props.trim;
+    props.onSelect(seg.id);
+    track(e, {
+      edit: true,
+      onMove: (ev) =>
+        props.onEditPreview({
+          segments: resizeSegment(base, seg.id, edge, clientXToMs(ev.clientX), props.durationMs),
+          trim,
+        }),
+    });
   };
 
-  const TOTAL_HEIGHT = EVENT_LANE_HEIGHT + STATE_BAND_HEIGHT;
-
-  // ズーム段階を循環切り替え
-  const cycleZoom = (dir: 1 | -1) => {
-    const idx = ZOOM_LEVELS.indexOf(zoomLevel());
-    const nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx + dir));
-    setZoomLevel(ZOOM_LEVELS[nextIdx]);
+  const dragTrim = (e: MouseEvent, edge: "start" | "end") => {
+    const segments = props.segments;
+    const base = props.trim;
+    track(e, {
+      edit: true,
+      onMove: (ev) => {
+        const trim = resizeTrim(base, edge, clientXToMs(ev.clientX), props.durationMs);
+        props.onEditPreview({ segments, trim });
+        props.onSeek(edge === "start" ? trim.start_ms : trim.end_ms);
+      },
+    });
   };
 
-  // 時間軸目盛り数: ズーム倍率に応じて増やす
-  const tickCount = createMemo(() => 4 * zoomLevel());
-  const timeTicks = createMemo(() => {
-    const n = tickCount();
-    const d = props.durationMs;
-    return Array.from({ length: n + 1 }, (_, i) => Math.round((d * i) / n));
-  });
+  const zoomLabel = (seg: ZoomSegment) => `${(seg.zoom ?? props.defaultZoom).toFixed(1)}x`;
 
   return (
-    <div class="space-y-1">
-      <Show when={!loading()} fallback={<div class="text-xs text-slate-500">...</div>}>
-        {/* ズームコントロール */}
-        <div class="flex items-center gap-1 text-[10px] text-slate-500">
-          <span>水平ズーム:</span>
-          <button
-            class="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200"
-            onClick={() => cycleZoom(-1)}
-            disabled={zoomLevel() === ZOOM_LEVELS[0]}
-            title="ズームアウト"
-          >−</button>
-          <span class="font-mono px-1 text-slate-300">{zoomLevel()}×</span>
-          <button
-            class="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200"
-            onClick={() => cycleZoom(1)}
-            disabled={zoomLevel() === ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
-            title="ズームイン"
-          >+</button>
-          <Show when={zoomLevel() !== 1}>
-            <button
-              class="ml-2 px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
-              onClick={() => setZoomLevel(1)}
-              title="等倍に戻す"
-            >フィット</button>
-          </Show>
+    <div class="flex select-none text-[10px] text-slate-500">
+      {/* トラック名 */}
+      <div class="w-14 flex-shrink-0 flex flex-col">
+        <div class="h-5" />
+        <div class="h-11 flex items-center">ズーム</div>
+        <div class="h-6 flex items-center">操作</div>
+      </div>
+
+      <div ref={tracksRef} class="relative flex-1 min-w-0">
+        {/* 目盛り */}
+        <div class="relative h-5 cursor-pointer border-b border-slate-700/60" onMouseDown={(e) => scrub(e, false)}>
+          <For each={ticks()}>
+            {(tick) => (
+              <div class="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${pct(tick.t)}%` }}>
+                <div class="w-px h-1.5 bg-slate-600" />
+                <span class="absolute top-1.5 -translate-x-1/2 font-mono text-[9px] text-slate-500 whitespace-nowrap">
+                  {tick.label}
+                </span>
+              </div>
+            )}
+          </For>
         </div>
 
-        {/* 水平スクロール可能なコンテナ: ZoomTrack と Timeline を同期スクロール */}
+        {/* ズーム区間トラック */}
         <div
-          ref={scrollRef}
-          class="overflow-x-auto overflow-y-hidden"
-          style={{ "scrollbar-gutter": "stable" }}
+          class="relative h-11 my-0.5 rounded bg-slate-800/60 cursor-pointer"
+          onMouseDown={(e) => scrub(e, true)}
         >
-          <div style={{ "min-width": `${100 * zoomLevel()}%`, width: `${100 * zoomLevel()}%` }}>
-            {/* ZoomTrack: 紫ブロック表示 */}
-            <div>
-              <div class="text-[9px] text-slate-500 mb-0.5">ズーム区間（クリックで追加 / ドラッグでリサイズ）</div>
-              <ZoomTrack
-                segments={props.segments}
-                durationMs={props.durationMs}
-                currentTimeMs={props.currentTimeMs ?? 0}
-                selectedSegmentId={props.selectedSegmentId}
-                onSelectSegment={props.onSelectSegment}
-                onUpdateSegment={props.onUpdateSegment}
-                onAddSegment={props.onAddSegment}
-                onDeleteSegment={props.onDeleteSegment}
-                onMergeSegments={props.onMergeSegments}
-                onSegmentResizeEnd={props.onSegmentResizeEnd}
-              />
-            </div>
+          <For each={props.segments}>
+            {(seg) => {
+              const selected = () => props.selectedId === seg.id;
+              return (
+                <div
+                  class={`zoom-segment absolute top-1 bottom-1 rounded-md cursor-pointer overflow-hidden ${
+                    selected()
+                      ? "bg-purple-500/50 ring-2 ring-purple-300 z-10"
+                      : "bg-purple-500/30 border border-purple-400/50 hover:bg-purple-500/40"
+                  }`}
+                  style={{ left: `${pct(seg.start_ms)}%`, width: `${pct(seg.end_ms - seg.start_ms)}%`, "min-width": "6px" }}
+                  onMouseDown={(e) => selectSegment(e, seg)}
+                >
+                  <span class="absolute inset-0 flex items-center justify-center text-[10px] text-purple-100 pointer-events-none whitespace-nowrap">
+                    {zoomLabel(seg)}
+                  </span>
+                  <div
+                    class="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-purple-300/50"
+                    onMouseDown={(e) => dragSegmentEdge(e, seg, "start")}
+                  />
+                  <div
+                    class="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-purple-300/50"
+                    onMouseDown={(e) => dragSegmentEdge(e, seg, "end")}
+                  />
+                </div>
+              );
+            }}
+          </For>
+        </div>
 
-            {/* Event lane + state band */}
-            <div class="relative" style={{ height: `${TOTAL_HEIGHT + 20}px` }}>
-          <div
-            ref={containerRef}
-            class="relative cursor-crosshair"
-            style={{ height: `${TOTAL_HEIGHT}px` }}
-            onClick={handleClick}
-          >
-            <svg
-              class="absolute inset-0 w-full"
-              viewBox={`0 0 1000 ${TOTAL_HEIGHT}`}
-              preserveAspectRatio="none"
-              style={{ height: `${TOTAL_HEIGHT}px` }}
-            >
-              {/* === Event dot lane === */}
-              <rect
-                x="0" y={EVENT_LANE_Y}
-                width="1000" height={EVENT_LANE_HEIGHT}
-                fill="rgba(15,23,42,0.3)"
-              />
-              {[1, 2, 3].map((i) => {
-                const laneH = (EVENT_LANE_HEIGHT - 8) / LANE_COUNT;
+        {/* 操作トラック（参考表示） */}
+        <div class="relative h-6 rounded bg-slate-800/30 cursor-pointer" onMouseDown={(e) => scrub(e, false)}>
+          <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 1000 22" preserveAspectRatio="none">
+            <For each={markers()}>
+              {(m) => {
+                const style = MARKER_STYLE[m.event_type];
+                const x = (m.time_ms / Math.max(1, props.durationMs)) * 1000;
                 return (
                   <line
-                    x1="0" y1={EVENT_LANE_Y + 4 + i * laneH}
-                    x2="1000" y2={EVENT_LANE_Y + 4 + i * laneH}
-                    stroke="rgba(100,116,139,0.1)" stroke-width="1"
+                    x1={x}
+                    x2={x}
+                    y1={style.y1}
+                    y2={style.y2}
+                    stroke={style.color}
+                    stroke-width="1.5"
                     vector-effect="non-scaling-stroke"
                   />
                 );
-              })}
-
-              {/* Event dots */}
-              <For each={visibleEvents()}>
-                {(evt, i) => {
-                  const config = () => EVENT_TYPE_CONFIG[evt.event_type];
-                  return (
-                    <Show when={config()}>
-                      <circle
-                        cx={timeToX(evt.time_ms, 1000)}
-                        cy={eventDotY(evt.event_type)}
-                        r={hoveredEventIdx() === i() ? 4 : 2}
-                        fill={config()!.color}
-                        stroke="rgba(0,0,0,0.3)"
-                        stroke-width="0.5"
-                        vector-effect="non-scaling-stroke"
-                        class="cursor-pointer"
-                        onMouseEnter={(e) => {
-                          setHoveredEventIdx(i());
-                          setTooltipPos({ x: e.clientX, y: e.clientY });
-                        }}
-                        onMouseLeave={() => {
-                          setHoveredEventIdx(null);
-                          setTooltipPos(null);
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          props.onSeekToTime?.(evt.time_ms);
-                        }}
-                      />
-                    </Show>
-                  );
-                }}
-              </For>
-
-              {/* === State transition band === */}
-              <For each={stateSegments()}>
-                {(seg) => {
-                  const x = () => timeToX(seg.start_ms, 1000);
-                  const w = () => timeToX(seg.end_ms, 1000) - x();
-                  return (
-                    <rect
-                      x={x()}
-                      y={STATE_BAND_Y + 1}
-                      width={Math.max(w(), 1)}
-                      height={STATE_BAND_HEIGHT - 2}
-                      rx="2"
-                      fill={stateColor(seg.state)}
-                    />
-                  );
-                }}
-              </For>
-
-              {/* State band labels */}
-              <For each={stateSegments()}>
-                {(seg) => {
-                  const x = () => timeToX(seg.start_ms, 1000);
-                  const w = () => timeToX(seg.end_ms, 1000) - x();
-                  return (
-                    <Show when={w() > 40}>
-                      <text
-                        x={x() + w() / 2}
-                        y={STATE_BAND_Y + STATE_BAND_HEIGHT / 2 + 1}
-                        text-anchor="middle"
-                        dominant-baseline="central"
-                        fill="white"
-                        font-size="8"
-                        font-family="monospace"
-                        vector-effect="non-scaling-stroke"
-                        class="pointer-events-none select-none"
-                        style={{ "paint-order": "stroke", stroke: "rgba(0,0,0,0.5)", "stroke-width": "3px" }}
-                      >
-                        {seg.zone_label}
-                      </text>
-                    </Show>
-                  );
-                }}
-              </For>
-
-              {/* Current time playhead */}
-              <Show when={props.currentTimeMs !== undefined}>
-                <line
-                  x1={timeToX(props.currentTimeMs!, 1000)}
-                  y1={0}
-                  x2={timeToX(props.currentTimeMs!, 1000)}
-                  y2={TOTAL_HEIGHT}
-                  stroke="rgba(255,255,255,0.7)"
-                  stroke-width="1.5"
-                  vector-effect="non-scaling-stroke"
-                />
-              </Show>
-            </svg>
-          </div>
-
-          {/* Time labels (ズーム倍率に応じて分割数を増やす) */}
-          <div class="flex justify-between text-[9px] text-slate-500 font-mono mt-0.5">
-            <For each={timeTicks()}>
-              {(ms) => <span>{formatTime(ms)}</span>}
-            </For>
-          </div>
-        </div>
-          </div>
-        </div>
-
-        {/* Tooltip */}
-        <Show when={tooltipPos() && hoveredEventIdx() !== null}>
-          <div
-            class="fixed z-50 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-[11px] font-mono text-slate-300 shadow-xl pointer-events-none"
-            style={{
-              left: `${tooltipPos()!.x + 12}px`,
-              top: `${tooltipPos()!.y - 10}px`,
-            }}
-          >
-            <Show when={hoveredEventIdx() !== null}>
-              {(_) => {
-                const evt = () => visibleEvents()[hoveredEventIdx()!];
-                return (
-                  <Show when={evt()}>
-                    {(e) => (
-                      <div class="space-y-0.5">
-                        <span
-                          class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium"
-                          style={{
-                            background: EVENT_TYPE_CONFIG[e().event_type]?.color ?? "gray",
-                            color: "white",
-                          }}
-                        >
-                          {EVENT_TYPE_CONFIG[e().event_type]?.label ?? e().event_type}
-                        </span>
-                        <div class="text-slate-400">{formatTime(e().time_ms)}</div>
-                        <Show when={e().x !== null && e().y !== null}>
-                          <div class="text-orange-300">({Math.round(e().x!)}, {Math.round(e().y!)})</div>
-                        </Show>
-                        <Show when={e().label}>
-                          <div class="text-slate-300">{e().label}</div>
-                        </Show>
-                      </div>
-                    )}
-                  </Show>
-                );
               }}
-            </Show>
-          </div>
-        </Show>
-
-        {/* Current state info bar */}
-        <Show when={props.currentTimeMs !== undefined}>
-          <div class="flex items-center gap-4 px-2 py-1.5 bg-slate-800/60 rounded text-[11px] font-mono text-slate-400">
-            <Show when={currentState()}>
-              {(seg) => (
-                <span class="flex items-center gap-1.5">
-                  <span
-                    class="inline-block w-2 h-2 rounded-sm"
-                    style={{ background: stateColor(seg().state) }}
-                  />
-                  <span class="text-slate-200">{seg().zone_label}</span>
-                </span>
-              )}
-            </Show>
-            <span>
-              ズーム: <span class="text-purple-300 font-medium">{getZoomAtTime(props.currentTimeMs!).toFixed(2)}x</span>
-            </span>
-          </div>
-        </Show>
-
-        {/* Legend */}
-        <div class="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap">
-          <span class="flex items-center gap-1">
-            <span class="inline-block w-3 h-2 rounded-sm" style={{ background: "rgba(100,116,139,0.5)" }} />
-            全画面
-          </span>
-          <span class="flex items-center gap-1">
-            <span class="inline-block w-3 h-2 rounded-sm" style={{ background: "rgba(168,85,247,0.6)" }} />
-            ズーム区間
-          </span>
-          <span class="text-slate-600">|</span>
-          <span class="text-slate-600">{props.segments.length} 区間 / {events().length} イベント</span>
+            </For>
+          </svg>
         </div>
-      </Show>
+
+        {/* トリムの外側を暗くする */}
+        <div
+          class="absolute top-0 bottom-0 left-0 bg-black/55 pointer-events-none"
+          style={{ width: `${pct(props.trim.start_ms)}%` }}
+        />
+        <div
+          class="absolute top-0 bottom-0 right-0 bg-black/55 pointer-events-none"
+          style={{ width: `${100 - pct(props.trim.end_ms)}%` }}
+        />
+
+        {/* トリムのハンドル */}
+        {/* 掴みやすいよう、つまみ (6px) の外側まで当たり判定を広げる */}
+        <div
+          class="absolute top-0 bottom-0 w-5 -ml-3.5 cursor-ew-resize z-20 group"
+          style={{ left: `${pct(props.trim.start_ms)}%` }}
+          onMouseDown={(e) => dragTrim(e, "start")}
+          title={`書き出しの開始 ${formatTime(props.trim.start_ms)}（ドラッグでトリム）`}
+        >
+          <div class="absolute inset-y-0 right-1.5 w-1.5 rounded-l bg-amber-400/90 group-hover:bg-amber-300" />
+        </div>
+        <div
+          class="absolute top-0 bottom-0 w-5 -ml-1.5 cursor-ew-resize z-20 group"
+          style={{ left: `${pct(props.trim.end_ms)}%` }}
+          onMouseDown={(e) => dragTrim(e, "end")}
+          title={`書き出しの終了 ${formatTime(props.trim.end_ms)}（ドラッグでトリム）`}
+        >
+          <div class="absolute inset-y-0 left-1.5 w-1.5 rounded-r bg-amber-400/90 group-hover:bg-amber-300" />
+        </div>
+
+        {/* 再生位置 */}
+        <div
+          class="absolute top-0 bottom-0 w-px bg-white pointer-events-none z-30"
+          style={{ left: `${pct(props.timeMs)}%` }}
+        >
+          <div class="absolute -top-0.5 -left-1 w-2 h-2 rotate-45 bg-white" />
+        </div>
+      </div>
     </div>
   );
 }

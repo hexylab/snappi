@@ -5,7 +5,16 @@ use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 
 /// Cursor sprite base size in pixels (before zoom scaling)
-const CURSOR_BASE_SIZE: u32 = 32;
+pub const CURSOR_BASE_SIZE: u32 = 32;
+
+/// キー表示（画面下中央のバッジ）の形。プレビュー (`export::preview`) も同じ値で描く。
+pub const KEY_BADGE_HEIGHT: u32 = 32;
+pub const KEY_BADGE_MARGIN_BOTTOM: u32 = 20;
+pub const KEY_BADGE_RADIUS: u32 = 8;
+pub const KEY_BADGE_COLOR: [u8; 4] = [30, 30, 30, 200];
+/// バッジの幅 = 文字列のバイト数 x CHAR_WIDTH + PADDING
+pub const KEY_BADGE_CHAR_WIDTH: u32 = 10;
+pub const KEY_BADGE_PADDING: u32 = 20;
 
 /// Embedded custom cursor PNG (icon/カーソル.png) and its hotspot
 const EMBEDDED_CURSOR_PNG: &[u8] = include_bytes!("../../../icon/カーソル.png");
@@ -22,7 +31,10 @@ const SPRITE_UNIT: f64 = 2.0;
 const SPRITE_OFFSET: (f64, f64) = (24.0, 18.0);
 
 /// 描画するカーソルの種類。録画時の `cursor_shape` イベントから決まる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/", rename_all = "lowercase"))]
 pub enum CursorKind {
     Arrow,
     IBeam,
@@ -97,6 +109,15 @@ impl Compositor {
 
     pub fn set_motion_blur(&mut self, enabled: bool) {
         self.motion_blur_enabled = enabled;
+    }
+
+    /// 形状ごとのカーソルスプライト `(種類, 画像, ホットスポット)`。プレビューに同じ画像を渡すために使う。
+    pub fn cursor_sprites(&self) -> [(CursorKind, &RgbaImage, (u32, u32)); 3] {
+        [
+            (CursorKind::Arrow, &self.arrow_sprite.image, self.arrow_sprite.hotspot),
+            (CursorKind::IBeam, &self.ibeam_sprite.image, self.ibeam_sprite.hotspot),
+            (CursorKind::Hand, &self.hand_sprite.image, self.hand_sprite.hotspot),
+        ]
     }
 
     /// 1 フレームを合成する。`camera` はカメラトラックのこのフレームの状態（フレーム内にクランプ済み）。
@@ -666,13 +687,13 @@ fn draw_click_ring(
 
 fn draw_key_badge(img: &mut RgbaImage, keys: &str, output_width: u32, output_height: u32) {
     // Draw a simple key badge at bottom center
-    let badge_height = 32u32;
-    let badge_width = (keys.len() as u32 * 10 + 20).min(output_width);
+    let badge_height = KEY_BADGE_HEIGHT;
+    let badge_width = (keys.len() as u32 * KEY_BADGE_CHAR_WIDTH + KEY_BADGE_PADDING).min(output_width);
     let x_start = (output_width - badge_width) / 2;
-    let y_start = output_height - badge_height - 20;
+    let y_start = output_height - badge_height - KEY_BADGE_MARGIN_BOTTOM;
 
-    // Badge background with rounded corners (8px)
-    let badge_radius = 8u32;
+    // Badge background with rounded corners
+    let badge_radius = KEY_BADGE_RADIUS;
     for y in y_start..y_start + badge_height {
         for x in x_start..x_start + badge_width {
             if x < img.width() && y < img.height() {
@@ -700,7 +721,7 @@ fn draw_key_badge(img: &mut RgbaImage, keys: &str, output_width: u32, output_hei
                 }
 
                 let pixel = img.get_pixel(x, y);
-                let blended = blend_pixel(*pixel, Rgba([30, 30, 30, 200]));
+                let blended = blend_pixel(*pixel, Rgba(KEY_BADGE_COLOR));
                 img.put_pixel(x, y, blended);
             }
         }
