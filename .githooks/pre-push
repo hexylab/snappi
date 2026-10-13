@@ -1,0 +1,28 @@
+#!/bin/sh
+# push 前に、送るコミットのメールアドレスと内容を確かめる（フックを通らずに作られたコミットも見る）
+. "$(dirname "$0")/common.sh"
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+require_gitleaks
+
+zero="0000000000000000000000000000000000000000"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # ブランチの削除
+
+  if [ "$remote_sha" = "$zero" ]; then
+    range="$local_sha --not --remotes" # 新しいブランチ: リモートに無いコミットだけ
+  else
+    range="$remote_sha..$local_sha"
+  fi
+
+  # shellcheck disable=SC2086
+  bad="$(git log --format='%h %ae %ce' $range | while read -r h ae ce; do
+    is_allowed_email "$ae" && is_allowed_email "$ce" || echo "  $h author=$ae committer=$ce"
+  done)"
+  [ -z "$bad" ] || fail "noreply 以外のメールアドレスのコミットがあります（$local_ref）:
+$bad
+  'git rebase -r <基点> --exec \"git commit --amend --no-edit --reset-author\"' などで直してください。"
+
+  gitleaks git --no-banner --redact -v -c "$(gitleaks_config)" --log-opts="$range" . ||
+    fail "push するコミットに個人情報・秘密情報の可能性がある箇所が見つかりました（$local_ref）。"
+done

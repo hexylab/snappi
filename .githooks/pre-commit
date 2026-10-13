@@ -1,0 +1,18 @@
+#!/bin/sh
+# コミット前に、作者のメールアドレスとステージした変更の個人情報・秘密情報を確かめる
+. "$(dirname "$0")/common.sh"
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# 1. 作者・コミッターのメールアドレス（コミットのメタデータは gitleaks では見られない）
+for who in GIT_AUTHOR_IDENT GIT_COMMITTER_IDENT; do
+  email="$(git var "$who" | sed -n 's/.*<\(.*\)>.*/\1/p')"
+  is_allowed_email "$email" ||
+    fail "コミットのメールアドレスが noreply ではありません: $email
+  git config user.email <ID>+<ユーザー名>$ALLOWED_EMAIL_SUFFIX を設定してください。"
+done
+
+# 2. ステージした変更
+require_gitleaks
+gitleaks git --pre-commit --staged --no-banner --redact -v -c "$(gitleaks_config)" . ||
+  fail "個人情報・秘密情報の可能性がある箇所が見つかりました（上の Finding を確認してください）。"

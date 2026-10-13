@@ -60,6 +60,15 @@ cargo test --lib capture_rate -- --ignored --nocapture
 - 仕様パラメータは `camera/spec.rs`、メトリクスは `eval/metrics.rs`。値を変えたら仕様書も更新する。
 - `src-tauri/Cargo.toml` に `default-run = "snappi"` があるため、`cargo run` は従来どおりアプリを起動する。
 
+### 個人情報・秘密情報のチェック
+
+`.githooks/` の pre-commit / pre-push が、コミットのメールアドレス（GitHub の noreply 以外は拒否）と
+変更内容（`gitleaks`、ルールは `.gitleaks.toml`）を確かめる。CI でも同じチェックを行う。詳細は `.githooks/README.md`。
+
+- 準備: `winget install gitleaks` と `npm install`（`core.hooksPath` を設定する）
+- 個人に固有の文字列は `.gitleaks.toml` に書かず、コミットされない `.git/gitleaks.local.toml` に書く
+- 例示用のパスは `C:\Users\...\` のように書く
+
 **ビルド時の注意**: Windows環境で `RC.EXE` が見つからないエラーが出た場合、Windows SDK のパスを通す必要がある:
 ```bash
 set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
