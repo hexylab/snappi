@@ -7,8 +7,8 @@ Windows 実機で録画したデータに置き換えるまでの暫定データ
 
     python3 testdata/gen_synthetic.py [シナリオ名 ...]
 
-シナリオ名を省略すると全シナリオを生成する。実録画に置き換えたシナリオは名前を指定せずに
-実行すると上書きされるので、置き換え後はこのスクリプトの SCENARIOS から外すこと。
+シナリオ名を省略すると、合成データのままのシナリオ（expect.json が無いか `"synthetic": true`）
+だけを生成する。実録画に置き換えたシナリオを上書きするには名前を明示する。
 """
 
 import json
@@ -101,7 +101,7 @@ class Rec:
             "window_initial_rect": window_rect,
             "frame_count": duration_ms * FPS // 1000,
         }
-        (d / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+        write_text(d / "meta.json", json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
         write_jsonl(d / "events.jsonl", sorted(self.events, key=lambda e: e["t"]))
         for fname, rows in (("ui_events.jsonl", self.ui_events), ("window_rects.jsonl", self.window_rects)):
             if rows:
@@ -109,11 +109,16 @@ class Rec:
             elif (d / fname).exists():
                 (d / fname).unlink()
         expect = {"description": description, "synthetic": True, "checks": checks}
-        (d / "expect.json").write_text(json.dumps(expect, indent=2, ensure_ascii=False) + "\n")
+        write_text(d / "expect.json", json.dumps(expect, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_text(path, text):
+    # Windows でも UTF-8・LF で書く
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def write_jsonl(path, rows):
-    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    write_text(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
 
 def vscode_typing():
@@ -271,8 +276,13 @@ SCENARIOS = {
     "window-mode": window_mode,
 }
 
+def is_synthetic(name):
+    expect = OUT_DIR / name / "expect.json"
+    return not expect.exists() or json.loads(expect.read_text(encoding="utf-8")).get("synthetic", False)
+
+
 if __name__ == "__main__":
-    names = sys.argv[1:] or list(SCENARIOS)
+    names = sys.argv[1:] or [n for n in SCENARIOS if is_synthetic(n)]
     for name in names:
         SCENARIOS[name]()
         print(f"generated {OUT_DIR / name}")

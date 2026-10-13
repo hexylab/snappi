@@ -2,25 +2,38 @@
 //!
 //! ```text
 //! cargo run --bin snappi-eval -- <recording_dir> [--metrics] [--debug-video <out.mp4>]
+//! cargo run --bin snappi-eval -- <recording_dir> --draft-expect
+//! cargo run --bin snappi-eval -- <recording_dir>... --table
 //! ```
 //! オプションを省略した場合は `--metrics` とみなす。
+//! `--draft-expect` は expect.json の下書きを標準出力に出す（description は既存の expect.json から引き継ぐ）。
+//! `--table` は複数の録画のメトリクスを Markdown の表（仕様書のベースライン表の形式）で出す。
+//! 録画でないディレクトリ（`testdata/recordings` 等）を渡すと、その直下の録画をすべて対象にする。
 
+use snappi_lib::eval::expect::Expectation;
 use snappi_lib::eval::{self, debug_video};
-use std::path::PathBuf;
+use snappi_lib::recording_data::RecordingData;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "使い方: snappi-eval <recording_dir> [--metrics] [--debug-video <out.mp4>]";
+const USAGE: &str = "使い方: snappi-eval <recording_dir> [--metrics] [--debug-video <out.mp4>]
+       snappi-eval <recording_dir> --draft-expect
+       snappi-eval <recording_dir>... --table";
 
 struct Args {
-    dir: PathBuf,
+    dirs: Vec<PathBuf>,
     metrics: bool,
     debug_video: Option<PathBuf>,
+    draft_expect: bool,
+    table: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut dir = None;
+    let mut dirs = Vec::new();
     let mut metrics = false;
     let mut debug_video = None;
+    let mut draft_expect = false;
+    let mut table = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -28,14 +41,25 @@ fn parse_args() -> Result<Args, String> {
             "--debug-video" => {
                 debug_video = Some(PathBuf::from(args.next().ok_or("--debug-video に出力先がありません")?));
             }
+            "--draft-expect" => draft_expect = true,
+            "--table" => table = true,
             "-h" | "--help" => return Err(String::new()),
             a if a.starts_with('-') => return Err(format!("不明なオプション: {}", a)),
-            a if dir.is_none() => dir = Some(PathBuf::from(a)),
-            a => return Err(format!("余分な引数: {}", a)),
+            a => dirs.push(PathBuf::from(a)),
         }
     }
-    let dir = dir.ok_or("録画ディレクトリを指定してください")?;
-    Ok(Args { dir, metrics: metrics || debug_video.is_none(), debug_video })
+    if dirs.is_empty() {
+        return Err("録画ディレクトリを指定してください".into());
+    }
+    if table {
+        if metrics || debug_video.is_some() || draft_expect {
+            return Err("--table は他のオプションと同時に指定できません".into());
+        }
+    } else if dirs.len() > 1 {
+        return Err(format!("余分な引数: {}", dirs[1].display()));
+    }
+    let metrics = metrics || (debug_video.is_none() && !draft_expect && !table);
+    Ok(Args { dirs, metrics, debug_video, draft_expect, table })
 }
 
 fn main() -> ExitCode {
@@ -50,7 +74,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match run(&args) {
+    let result = if args.table { print_table(&args.dirs) } else { run(&args) };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("エラー: {:#}", e);
@@ -60,10 +85,21 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> anyhow::Result<()> {
-    let (data, report) = eval::evaluate_dir(&args.dir)?;
+    let dir = &args.dirs[0];
+
+    if args.draft_expect {
+        let data = RecordingData::load(dir)?;
+        let description = Expectation::load(dir)?.map(|e| e.description).unwrap_or_default();
+        println!("{}", serde_json::to_string_pretty(&Expectation::draft(&data, &description))?);
+        if !args.metrics && args.debug_video.is_none() {
+            return Ok(());
+        }
+    }
+
+    let (data, report) = eval::evaluate_dir(dir)?;
 
     if args.metrics {
-        println!("録画: {}", args.dir.display());
+        println!("録画: {}", dir.display());
         println!(
             "  {}x{} / {:.1}秒 / 元フレーム {} / イベント {} / モード {}",
             data.width(),
@@ -91,4 +127,56 @@ fn run(args: &Args) -> anyhow::Result<()> {
         println!("デバッグ動画を出力しました: {}", out.display());
     }
     Ok(())
+}
+
+/// `--table` の対象。meta.json の無いディレクトリ（testdata/recordings 等）はその直下の録画に展開する。
+fn table_dirs(dirs: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        if dir.join("meta.json").exists() {
+            out.push(dir.clone());
+        } else if dir.is_dir() {
+            let mut children: Vec<PathBuf> = std::fs::read_dir(dir)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.join("meta.json").exists())
+                .collect();
+            children.sort();
+            out.extend(children);
+        }
+    }
+    Ok(out)
+}
+
+fn print_table(dirs: &[PathBuf]) -> anyhow::Result<()> {
+    let mut rows = Vec::new();
+    let mut header = None;
+    for dir in &table_dirs(dirs)? {
+        let (_, report) = eval::evaluate_dir(dir)?;
+        header.get_or_insert_with(|| report.metric_results.iter().map(|r| r.id).collect::<Vec<_>>());
+        let mut cells: Vec<String> = vec![format!("`{}`", dir_name(dir))];
+        cells.extend(report.metric_results.iter().map(|r| mark(&r.value, r.passed)));
+        let passed = report.check_results.iter().filter(|c| c.passed).count();
+        let total = report.check_results.len();
+        cells.push(mark(&format!("{}/{}", passed, total), passed == total));
+        rows.push(cells);
+    }
+    let header = header.unwrap_or_default();
+    println!("| シナリオ | {} | expect.json |", header.join(" | "));
+    println!("|---|{}---|", "---|".repeat(header.len()));
+    for cells in rows {
+        println!("| {} |", cells.join(" | "));
+    }
+    Ok(())
+}
+
+fn mark(value: &str, passed: bool) -> String {
+    if passed {
+        value.to_string()
+    } else {
+        format!("**{}** ✗", value)
+    }
+}
+
+fn dir_name(dir: &Path) -> String {
+    dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
 }

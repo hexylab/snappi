@@ -102,7 +102,7 @@ v1〜v4 のカメラエンジンは毎回書き換えられてきたが、「何
 | `idle-gaps` | 操作 → 10秒放置 → 操作 |
 | `window-mode` | ウィンドウモードでの録画（録画中にウィンドウを移動） |
 
-> **現状**: 現在のデータは `testdata/gen_synthetic.py` で生成した**合成データ**（`expect.json` に `"synthetic": true`）。Windows 実機で録画したデータに順次置き換える。置き換え時は録画ディレクトリから `frames/` と `audio.wav` を除いてコピーし、実際の操作時刻に合わせて `expect.json` を書き直す。
+> **現状**: 現在のデータは `testdata/gen_synthetic.py` で生成した**合成データ**（`expect.json` に `"synthetic": true`）。Windows 実機で録画したデータに順次置き換える。録画する操作と取り込み手順は `testdata/recordings/README.md` を参照（`testdata/import_recording.py` が `frames/` と `audio.wav` を除いてコピーし、`expect.json` の下書きを作る）。
 
 ### 7.1 expect.json
 
@@ -136,6 +136,10 @@ cargo run --bin snappi-eval -- ../testdata/recordings/vscode-typing --metrics
 cargo run --release --bin snappi-eval -- <recording_dir> --debug-video out.mp4
 # 全シナリオの評価（新エンジン完成までは ignore）
 cargo test --test camera_eval -- --ignored --nocapture
+# expect.json の下書きを出力（仕様 R1〜R5 から寄る/引く時間帯とクリック位置を求める）
+cargo run --bin snappi-eval -- <recording_dir> --draft-expect
+# 全シナリオのメトリクスを §9 の表の形式で出力
+cargo run -q --bin snappi-eval -- ../testdata/recordings --table
 ```
 
 デバッグ動画は**元フレーム全体**に次を描き込み、下端に区間タイムラインを付ける。
