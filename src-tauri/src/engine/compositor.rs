@@ -3,6 +3,7 @@ use super::spring::AnimatedViewport;
 use super::zoom_planner::ZoomKeyframe;
 use crate::config::defaults::OutputStyle;
 use image::{Rgba, RgbaImage};
+use rayon::prelude::*;
 
 /// Cursor sprite base size in pixels (before zoom scaling)
 const CURSOR_BASE_SIZE: u32 = 32;
@@ -11,6 +12,41 @@ const CURSOR_BASE_SIZE: u32 = 32;
 const EMBEDDED_CURSOR_PNG: &[u8] = include_bytes!("../../../icon/カーソル.png");
 const EMBEDDED_CURSOR_HOTSPOT: (u32, u32) = (35, 22);
 
+/// 埋め込み矢印カーソルと同じ見た目・スケールで描く追加スプライトの設定。
+/// 埋め込み PNG (96x96) と同じキャンバスサイズにすることで描画時の拡大率を揃える。
+const SPRITE_CANVAS: u32 = 96;
+const SPRITE_FILL: [u8; 3] = [252, 255, 0];
+const SPRITE_OUTLINE: [u8; 3] = [33, 33, 33];
+const SPRITE_OUTLINE_WIDTH: f64 = 3.0;
+/// 32 単位の設計座標をスプライト座標に変換する倍率とオフセット
+const SPRITE_UNIT: f64 = 2.0;
+const SPRITE_OFFSET: (f64, f64) = (24.0, 18.0);
+
+/// 描画するカーソルの種類。録画時の `cursor_shape` イベントから決まる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorKind {
+    Arrow,
+    IBeam,
+    Hand,
+}
+
+impl CursorKind {
+    /// 録画された形状名から描画スプライトを選ぶ。専用スプライトが無い形状は矢印で描く。
+    pub fn from_shape(shape: &str) -> Self {
+        match shape {
+            "ibeam" => CursorKind::IBeam,
+            "hand" => CursorKind::Hand,
+            _ => CursorKind::Arrow,
+        }
+    }
+}
+
+struct CursorSprite {
+    image: RgbaImage,
+    /// スプライト内のホットスポット（指す位置）
+    hotspot: (u32, u32),
+}
+
 pub struct Compositor {
     style: OutputStyle,
     viewport: AnimatedViewport,
@@ -18,10 +54,10 @@ pub struct Compositor {
     screen_height: f64,
     /// Cached background image (same every frame)
     cached_background: Option<RgbaImage>,
-    /// Pre-rendered cursor sprite at base size
-    cursor_sprite: RgbaImage,
-    /// Cursor hotspot offset within sprite (tip position)
-    cursor_hotspot: (u32, u32),
+    /// 形状ごとのカーソルスプライト
+    arrow_sprite: CursorSprite,
+    ibeam_sprite: CursorSprite,
+    hand_sprite: CursorSprite,
     /// Previous composed frame for motion blur
     prev_output: Option<RgbaImage>,
     /// Previous viewport state for motion amount calculation
@@ -38,7 +74,7 @@ impl Compositor {
         );
 
         // Load embedded cursor PNG, fallback to system capture, then to SDF sprite
-        let (cursor_sprite, cursor_hotspot) = load_embedded_cursor()
+        let (arrow_image, arrow_hotspot) = load_embedded_cursor()
             .or_else(|| {
                 log::info!("Embedded cursor decode failed, trying system capture");
                 capture_system_cursor_sprite()
@@ -58,48 +94,12 @@ impl Compositor {
             screen_width: screen_width as f64,
             screen_height: screen_height as f64,
             cached_background: None,
-            cursor_sprite,
-            cursor_hotspot,
+            arrow_sprite: CursorSprite { image: arrow_image, hotspot: arrow_hotspot },
+            ibeam_sprite: create_ibeam_sprite(),
+            hand_sprite: create_hand_sprite(),
             prev_output: None,
             prev_vp_center: None,
             motion_blur_enabled: false,
-        }
-    }
-
-    /// Load a custom cursor from a PNG file path.
-    /// Returns true if loaded successfully.
-    pub fn set_cursor_from_path(&mut self, path: &str, hotspot_x: u32, hotspot_y: u32) -> bool {
-        match image::open(path) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
-                log::info!("Custom cursor loaded: {}x{} from '{}' hotspot=({},{})",
-                    rgba.width(), rgba.height(), path, hotspot_x, hotspot_y);
-                self.cursor_sprite = rgba;
-                self.cursor_hotspot = (hotspot_x, hotspot_y);
-                true
-            }
-            Err(e) => {
-                log::warn!("Failed to load custom cursor from '{}': {}", path, e);
-                false
-            }
-        }
-    }
-
-    /// Try to capture the Windows system cursor.
-    /// Returns true if captured successfully.
-    pub fn set_cursor_from_system(&mut self) -> bool {
-        match capture_system_cursor_sprite() {
-            Some((img, hx, hy)) => {
-                log::info!("System cursor captured: {}x{} hotspot=({},{})",
-                    img.width(), img.height(), hx, hy);
-                self.cursor_sprite = img;
-                self.cursor_hotspot = (hx, hy);
-                true
-            }
-            None => {
-                log::warn!("System cursor capture failed, keeping current sprite");
-                false
-            }
         }
     }
 
@@ -126,6 +126,7 @@ impl Compositor {
         raw_frame: &RgbaImage,
         frame_time_ms: u64,
         cursor_pos: Option<(f64, f64)>,
+        cursor_kind: CursorKind,
         click_effects: &[ClickEffect],
         key_overlay: Option<&KeyOverlay>,
         dt: f64,
@@ -136,7 +137,7 @@ impl Compositor {
         let vp = self.viewport.current_viewport(self.screen_width, self.screen_height);
         let zoom = vp.zoom;
 
-        // (2) Crop and scale to output size (using Triangle filter for speed)
+        // (2) Crop and scale to output size（サブピクセル精度）
         let mut output = crop_and_scale(
             raw_frame,
             vp.x,
@@ -158,13 +159,18 @@ impl Compositor {
                 self.screen_height,
             );
             let cursor_scale = self.style.cursor_size_multiplier * zoom;
+            let sprite = match cursor_kind {
+                CursorKind::Arrow => &self.arrow_sprite,
+                CursorKind::IBeam => &self.ibeam_sprite,
+                CursorKind::Hand => &self.hand_sprite,
+            };
             draw_cursor_sprite(
                 &mut output,
-                &self.cursor_sprite,
+                &sprite.image,
                 out_x,
                 out_y,
                 cursor_scale,
-                self.cursor_hotspot,
+                sprite.hotspot,
             );
         }
 
@@ -315,6 +321,11 @@ impl KeyOverlay {
     }
 }
 
+/// 元フレームの矩形 (x, y, w, h)（小数可）を out_w x out_h にリサンプリングする。
+///
+/// 切り抜き位置・サイズを整数に丸めないため、ゆっくりしたパン・ズームでも
+/// 映像が 1px 単位でガタつかない。各出力画素はバイリニア補間でサンプリングし、
+/// 縮小時は縮小率に応じた数のサンプルを平均してエイリアシングを抑える。
 fn crop_and_scale(
     src: &RgbaImage,
     x: f64,
@@ -324,18 +335,79 @@ fn crop_and_scale(
     out_w: u32,
     out_h: u32,
 ) -> RgbaImage {
-    let src_x = x.max(0.0) as u32;
-    let src_y = y.max(0.0) as u32;
-    let src_w = (w as u32).min(src.width().saturating_sub(src_x));
-    let src_h = (h as u32).min(src.height().saturating_sub(src_y));
-
-    if src_w == 0 || src_h == 0 {
-        return RgbaImage::new(out_w, out_h);
+    let mut out = RgbaImage::new(out_w, out_h);
+    if src.width() == 0 || src.height() == 0 || w <= 0.0 || h <= 0.0 || out_w == 0 || out_h == 0 {
+        return out;
     }
 
-    let cropped = image::imageops::crop_imm(src, src_x, src_y, src_w, src_h).to_image();
-    // Use Triangle (bilinear) filter instead of Lanczos3 for 2-3x speedup
-    image::imageops::resize(&cropped, out_w, out_h, image::imageops::FilterType::Triangle)
+    let step_x = w / out_w as f64;
+    let step_y = h / out_h as f64;
+    // 縮小率が 1 を超える分だけスーパーサンプリングする（例: 4K→1080p なら 2x2）
+    let ss_x = step_x.ceil().max(1.0) as usize;
+    let ss_y = step_y.ceil().max(1.0) as usize;
+    let weight = 1.0 / (ss_x * ss_y) as f32;
+
+    // 各サブサンプルの x 座標は行に依らないので先に計算しておく
+    let xs: Vec<f32> = (0..out_w as usize)
+        .flat_map(|ox| {
+            (0..ss_x).map(move |i| {
+                (x + (ox as f64 + (i as f64 + 0.5) / ss_x as f64) * step_x - 0.5) as f32
+            })
+        })
+        .collect();
+
+    let row_len = out_w as usize * 4;
+    out.as_mut()
+        .par_chunks_mut(row_len)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            let ys: Vec<f32> = (0..ss_y)
+                .map(|j| (y + (oy as f64 + (j as f64 + 0.5) / ss_y as f64) * step_y - 0.5) as f32)
+                .collect();
+            for (ox, px) in row.chunks_exact_mut(4).enumerate() {
+                let mut acc = [0.0f32; 4];
+                for &sy in &ys {
+                    for &sx in &xs[ox * ss_x..(ox + 1) * ss_x] {
+                        let c = sample_bilinear(src, sx, sy);
+                        for k in 0..4 {
+                            acc[k] += c[k];
+                        }
+                    }
+                }
+                for k in 0..4 {
+                    px[k] = (acc[k] * weight).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        });
+    out
+}
+
+/// 画素中心が整数座標にある画像を (x, y) でバイリニア補間する。範囲外は端の画素で延長する。
+fn sample_bilinear(src: &RgbaImage, x: f32, y: f32) -> [f32; 4] {
+    let max_x = (src.width() - 1) as f32;
+    let max_y = (src.height() - 1) as f32;
+    let x = x.clamp(0.0, max_x);
+    let y = y.clamp(0.0, max_y);
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let fx = x - x0;
+    let fy = y - y0;
+    let x0 = x0 as u32;
+    let y0 = y0 as u32;
+    let x1 = (x0 + 1).min(src.width() - 1);
+    let y1 = (y0 + 1).min(src.height() - 1);
+
+    let p00 = src.get_pixel(x0, y0).0;
+    let p10 = src.get_pixel(x1, y0).0;
+    let p01 = src.get_pixel(x0, y1).0;
+    let p11 = src.get_pixel(x1, y1).0;
+    let mut out = [0.0f32; 4];
+    for k in 0..4 {
+        let top = p00[k] as f32 + (p10[k] as f32 - p00[k] as f32) * fx;
+        let bottom = p01[k] as f32 + (p11[k] as f32 - p01[k] as f32) * fx;
+        out[k] = top + (bottom - top) * fy;
+    }
+    out
 }
 
 // --- High-quality cursor rendering ---
@@ -347,7 +419,6 @@ fn crop_and_scale(
 fn create_cursor_sprite(size: u32) -> RgbaImage {
     let pad = 6u32; // extra padding for shadow
     let total = size + pad * 2;
-    let mut img = RgbaImage::new(total, total);
     let s = size as f64;
 
     // Arrow cursor vertices (normalized 0..1, origin at top-left)
@@ -367,20 +438,67 @@ fn create_cursor_sprite(size: u32) -> RgbaImage {
         .map(|(vx, vy)| (vx * s + pad as f64, vy * s + pad as f64))
         .collect();
 
+    render_polygon_sprite(&pts, total, [255, 255, 255], [0, 0, 0], 1.8)
+}
+
+/// I ビーム（テキスト入力）カーソル。ホットスポットは中央。
+fn create_ibeam_sprite() -> CursorSprite {
+    let units = [
+        (7.0, 1.0), (11.0, 1.0), (12.0, 2.0), (13.0, 1.0), (17.0, 1.0), (17.0, 3.0),
+        (13.4, 3.0), (13.4, 27.0), (17.0, 27.0), (17.0, 29.0), (13.0, 29.0), (12.0, 28.0),
+        (11.0, 29.0), (7.0, 29.0), (7.0, 27.0), (10.6, 27.0), (10.6, 3.0), (7.0, 3.0),
+    ];
+    polygon_cursor_sprite(&units, (12.0, 15.0))
+}
+
+/// 手（リンク）カーソル。ホットスポットは人差し指の先。
+fn create_hand_sprite() -> CursorSprite {
+    let units = [
+        (10.0, 3.0), (10.6, 1.6), (12.0, 1.0), (13.4, 1.6), (14.0, 3.0), (14.0, 11.0),
+        (14.6, 10.2), (16.0, 9.8), (17.4, 10.4), (18.0, 11.5),
+        (18.6, 10.9), (20.0, 10.6), (21.4, 11.2), (22.0, 12.5),
+        (22.6, 12.1), (24.0, 12.0), (25.3, 12.7), (26.0, 14.0),
+        (26.0, 21.0), (24.5, 25.5), (23.0, 29.0), (13.0, 29.0), (11.5, 25.5),
+        (6.0, 19.5), (5.2, 17.8), (5.6, 16.2), (7.0, 15.6), (8.6, 16.2), (10.0, 17.5),
+    ];
+    polygon_cursor_sprite(&units, (12.0, 1.0))
+}
+
+/// 32 単位の設計座標で与えた多角形を、埋め込み矢印と同じ配色・スケールのスプライトにする。
+fn polygon_cursor_sprite(units: &[(f64, f64)], hotspot: (f64, f64)) -> CursorSprite {
+    let to_px = |(x, y): (f64, f64)| (x * SPRITE_UNIT + SPRITE_OFFSET.0, y * SPRITE_UNIT + SPRITE_OFFSET.1);
+    let pts: Vec<(f64, f64)> = units.iter().copied().map(to_px).collect();
+    let (hx, hy) = to_px(hotspot);
+    CursorSprite {
+        image: render_polygon_sprite(&pts, SPRITE_CANVAS, SPRITE_FILL, SPRITE_OUTLINE, SPRITE_OUTLINE_WIDTH),
+        hotspot: (hx.round() as u32, hy.round() as u32),
+    }
+}
+
+/// 多角形（ピクセル座標）を塗り・外側の縁取り・影付きで size x size の画像に描く。
+fn render_polygon_sprite(
+    pts: &[(f64, f64)],
+    size: u32,
+    fill: [u8; 3],
+    outline: [u8; 3],
+    outline_width: f64,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(size, size);
+    let total = size;
+
     // For each pixel, compute signed distance to the polygon boundary
     for py in 0..total {
         for px in 0..total {
             let x = px as f64 + 0.5;
             let y = py as f64 + 0.5;
 
-            let dist = signed_distance_to_polygon(&pts, x, y);
+            let dist = signed_distance_to_polygon(pts, x, y);
 
             // Shadow (offset +2px down, +1px right, blurred)
-            let shadow_dist = signed_distance_to_polygon(&pts, x - 1.0, y - 2.0);
+            let shadow_dist = signed_distance_to_polygon(pts, x - 1.0, y - 2.0);
             let shadow_alpha = smoothstep(3.0, 0.0, shadow_dist) * 0.4;
 
-            // Black outline: ~2px thick around the edge
-            let outline_width = 1.8;
+            // Outline around the edge
             let outline_alpha = smoothstep(0.5, -0.5, dist - outline_width);
 
             // White fill
@@ -398,23 +516,24 @@ fn create_cursor_sprite(size: u32) -> RgbaImage {
                 // shadow is black
             }
 
-            // Outline layer (black)
+            // Outline layer
             if outline_alpha > 0.0 {
                 let sa = outline_alpha;
-                r = r * (1.0 - sa);
-                g = g * (1.0 - sa);
-                b = b * (1.0 - sa);
-                a = sa + a * (1.0 - sa);
+                let out_a = sa + a * (1.0 - sa);
+                r = (outline[0] as f64 * sa + r * a * (1.0 - sa)) / out_a;
+                g = (outline[1] as f64 * sa + g * a * (1.0 - sa)) / out_a;
+                b = (outline[2] as f64 * sa + b * a * (1.0 - sa)) / out_a;
+                a = out_a;
             }
 
-            // Fill layer (white)
+            // Fill layer
             if fill_alpha > 0.0 {
                 let sa = fill_alpha;
                 let out_a = sa + a * (1.0 - sa);
                 if out_a > 0.0 {
-                    r = (255.0 * sa + r * a * (1.0 - sa)) / out_a;
-                    g = (255.0 * sa + g * a * (1.0 - sa)) / out_a;
-                    b = (255.0 * sa + b * a * (1.0 - sa)) / out_a;
+                    r = (fill[0] as f64 * sa + r * a * (1.0 - sa)) / out_a;
+                    g = (fill[1] as f64 * sa + g * a * (1.0 - sa)) / out_a;
+                    b = (fill[2] as f64 * sa + b * a * (1.0 - sa)) / out_a;
                     a = out_a;
                 }
             }
@@ -1045,6 +1164,68 @@ mod tests {
         // Inside near corner should still be 0
         let d = dist_to_rounded_rect(93.0, 93.0, 0.0, 0.0, 100.0, 100.0, 10.0);
         assert_eq!(d, 0.0, "Inside near corner should be 0: {}", d);
+    }
+
+    /// 横方向に 20 ずつ明るくなるグレーのランプ画像
+    fn ramp_image(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_fn(w, h, |x, _| {
+            let v = (x * 20) as u8;
+            Rgba([v, v, v, 255])
+        })
+    }
+
+    #[test]
+    fn test_crop_and_scale_identity() {
+        let src = ramp_image(8, 4);
+        let out = crop_and_scale(&src, 0.0, 0.0, 8.0, 4.0, 8, 4);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn test_crop_and_scale_subpixel_offset() {
+        // 0.25px ずらすと、整数に丸めずにその分だけ補間された値になる
+        let src = ramp_image(8, 1);
+        let out = crop_and_scale(&src, 0.25, 0.0, 4.0, 1.0, 4, 1);
+        let values: Vec<u8> = out.pixels().map(|p| p[0]).collect();
+        assert_eq!(values, vec![5, 25, 45, 65]);
+
+        // 位置を少しずつ動かすと出力も少しずつ変わる（1px 単位で跳ばない）
+        let a = crop_and_scale(&src, 1.0, 0.0, 4.0, 1.0, 4, 1).get_pixel(0, 0)[0];
+        let b = crop_and_scale(&src, 1.1, 0.0, 4.0, 1.0, 4, 1).get_pixel(0, 0)[0];
+        let c = crop_and_scale(&src, 1.2, 0.0, 4.0, 1.0, 4, 1).get_pixel(0, 0)[0];
+        assert!(a < b && b < c, "a={} b={} c={}", a, b, c);
+    }
+
+    #[test]
+    fn test_crop_and_scale_downscale_averages() {
+        // 1px の市松模様を 1/2 に縮小すると平均の灰色になる（エイリアシングしない）
+        let src = RgbaImage::from_fn(4, 4, |x, y| {
+            let v = if (x + y) % 2 == 0 { 0 } else { 254 };
+            Rgba([v, v, v, 255])
+        });
+        let out = crop_and_scale(&src, 0.0, 0.0, 4.0, 4.0, 2, 2);
+        for p in out.pixels() {
+            assert_eq!(p[0], 127);
+            assert_eq!(p[3], 255);
+        }
+    }
+
+    #[test]
+    fn test_cursor_kind_from_shape() {
+        assert_eq!(CursorKind::from_shape("ibeam"), CursorKind::IBeam);
+        assert_eq!(CursorKind::from_shape("hand"), CursorKind::Hand);
+        assert_eq!(CursorKind::from_shape("arrow"), CursorKind::Arrow);
+        assert_eq!(CursorKind::from_shape("size_we"), CursorKind::Arrow);
+    }
+
+    #[test]
+    fn test_shape_sprites_are_opaque_at_hotspot() {
+        for sprite in [create_ibeam_sprite(), create_hand_sprite()] {
+            assert_eq!(sprite.image.width(), SPRITE_CANVAS);
+            let (hx, hy) = sprite.hotspot;
+            assert!(sprite.image.get_pixel(hx, hy)[3] > 200, "ホットスポットが描画されていない");
+            assert!(sprite.image.get_pixel(0, 0)[3] < 10, "角は透明");
+        }
     }
 
     #[test]

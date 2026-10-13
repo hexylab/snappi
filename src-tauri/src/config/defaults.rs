@@ -38,9 +38,6 @@ impl Default for StyleSettings {
             shadow_enabled: true,
             shadow_blur: 40.0,
             shadow_offset_y: 0.0,
-            cursor_image_path: None,
-            cursor_hotspot_x: 0,
-            cursor_hotspot_y: 0,
         }
     }
 }

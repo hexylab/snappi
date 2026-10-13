@@ -2,7 +2,8 @@
 //!
 //! Generates zoom keyframes by analyzing ALL scenes before making any decisions.
 //! Uses a simple 2-state transition model:
-//! - **Overview**: Full screen (display mode) or window view (window mode)
+//! - **Overview**: キャプチャ領域全体（ディスプレイ・ウィンドウ・範囲のいずれも、
+//!   座標はキャプチャ領域基準なのでフレーム全体を表示する）
 //! - **WorkArea**: Zoomed into the active focus area
 //!
 //! Idle detection considers both user input events AND frame changes:
@@ -11,7 +12,7 @@
 use crate::config::{EffectsSettings, RecordingMeta};
 use crate::engine::analyzer::Rect;
 use crate::engine::frame_differ::ChangeRegion;
-use crate::engine::scene_splitter::{calc_window_zoom, Scene};
+use crate::engine::scene_splitter::Scene;
 use serde::{Deserialize, Serialize};
 
 // ------------------------------------------------------------------
@@ -167,15 +168,13 @@ pub fn generate_zoom_plan(
     let scale = settings.animation_speed.speed_scale();
     let idle_ms = settings.idle_zoom_out_ms;
 
-    // Compute overview target based on recording mode
-    let (overview_x, overview_y, overview_zoom) =
-        compute_overview_target(meta, screen_w, screen_h, settings.max_zoom);
-
-    let is_window_mode = meta.recording_mode.as_deref() == Some("window");
+    // Overview はキャプチャ領域全体。イベント座標はキャプチャ領域基準
+    // （RecordingData で変換済み）なので、録画モードによらずフレーム中央・等倍になる。
+    let (overview_x, overview_y, overview_zoom) = (screen_w / 2.0, screen_h / 2.0, 1.0);
 
     let mut plan: Vec<ZoomKeyframe> = Vec::new();
 
-    // 録画開始は必ずOverviewから（Windowモードの場合はWindow表示）
+    // 録画開始は必ずOverviewから
     plan.push(ZoomKeyframe {
         time_ms: 0,
         target_x: overview_x,
@@ -266,19 +265,11 @@ pub fn generate_zoom_plan(
         // 無ければ従来の bbox/center/zoom_level にフォールバック。
         let target = resolve_scene_target(scene, screen_w, screen_h, settings.max_zoom);
 
-        // Windowモード: WorkAreaのzoomがOverview以下になるようクランプ
-        // （ウィンドウ全体表示より拡大しない。パンのみで追従）
-        let clamped_zoom = if is_window_mode {
-            target.zoom_level.min(overview_zoom)
-        } else {
-            target.zoom_level
-        };
-
         plan.push(ZoomKeyframe {
             time_ms: kf_time,
             target_x: target.center_x,
             target_y: target.center_y,
-            zoom_level: clamped_zoom,
+            zoom_level: target.zoom_level,
             transition,
             spring_hint: Some(SpringHint {
                 zoom_half_life: zoom_hl * scale,
@@ -323,37 +314,6 @@ pub fn generate_zoom_plan(
     deduplicate_keyframes(&mut plan, MIN_KEYFRAME_INTERVAL_MS);
 
     plan
-}
-
-/// Compute the overview (zoomed-out) target based on recording mode.
-///
-/// - Display mode: zoom 1.0 at screen center
-/// - Window mode: zoom to fit window_initial_rect
-fn compute_overview_target(
-    meta: &RecordingMeta,
-    screen_w: f64,
-    screen_h: f64,
-    max_zoom: f64,
-) -> (f64, f64, f64) {
-    let is_window_mode = meta.recording_mode.as_deref() == Some("window");
-
-    if is_window_mode {
-        if let Some(ref rect) = meta.window_initial_rect {
-            let win_rect = Rect {
-                x: rect[0],
-                y: rect[1],
-                width: rect[2] - rect[0],
-                height: rect[3] - rect[1],
-            };
-            let zoom = calc_window_zoom(&win_rect, screen_w, screen_h, max_zoom);
-            let cx = win_rect.x + win_rect.width / 2.0;
-            let cy = win_rect.y + win_rect.height / 2.0;
-            return (cx, cy, zoom);
-        }
-    }
-
-    // Display mode (default): full screen overview
-    (screen_w / 2.0, screen_h / 2.0, 1.0)
 }
 
 /// Check if we should emit a keyframe at this time (not too close to the last one).
@@ -622,29 +582,29 @@ mod tests {
     }
 
     #[test]
-    fn test_window_mode_starts_with_window_overview() {
+    fn test_window_mode_overview_is_whole_capture() {
+        // ウィンドウ録画ではフレーム = ウィンドウ、座標もウィンドウ基準なので
+        // Overview はフレーム全体（中央・等倍）になり、シーンへのズームも制限しない。
         let mut meta = test_meta();
+        meta.screen_width = 800;
+        meta.screen_height = 600;
         meta.recording_mode = Some("window".to_string());
-        meta.window_initial_rect = Some([100.0, 100.0, 900.0, 700.0]); // 800x600 window
+        meta.window_initial_rect = Some([100.0, 100.0, 900.0, 700.0]);
 
         let scenes = vec![
             Scene::for_test(0, 0, 2000, 300.0, 300.0, 2.0),
             Scene::for_test(1, 10000, 12000, 700.0, 500.0, 2.0),
         ];
         let plan = generate_zoom_plan(&scenes, &meta, &test_settings(), &[]);
-        // t=0のOverviewがWindow表示であることを確認
         assert_eq!(plan[0].time_ms, 0);
         assert!(matches!(plan[0].transition, TransitionType::SpringOut));
-        assert!(
-            plan[0].zoom_level > 1.0,
-            "Window mode should start at window zoom level, not full screen, got {:.2}",
-            plan[0].zoom_level,
+        assert_eq!(
+            (plan[0].target_x, plan[0].target_y, plan[0].zoom_level),
+            (400.0, 300.0, 1.0)
         );
-        // Center should be near window center (500, 400)
         assert!(
-            (plan[0].target_x - 500.0).abs() < 50.0,
-            "Target X should be window center, got {}",
-            plan[0].target_x,
+            plan.iter().any(|kf| kf.zoom_level > 1.0),
+            "ウィンドウ録画でもシーンにズームインする"
         );
     }
 
