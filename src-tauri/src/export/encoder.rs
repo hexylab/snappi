@@ -1,9 +1,11 @@
+use crate::camera::{CameraState, CameraTrack};
 use crate::config::defaults::OutputStyle;
 use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent};
 use crate::engine::compositor::{ClickEffect, Compositor, CursorKind, KeyOverlay};
 use crate::engine::cursor_smoother::CursorSmoother;
 use crate::engine::frame_differ::{self, ChangeRegion};
 use crate::engine::preprocessor::preprocess;
+use crate::engine::spring::AnimatedViewport;
 use crate::engine::scene_splitter::{self, split_into_scenes, Scene};
 use crate::engine::zoom_planner::{generate_zoom_plan, ZoomKeyframe};
 use crate::export::presets::EncodingParams;
@@ -226,6 +228,45 @@ fn plan_export_keyframes(data: &RecordingData, settings: &AppSettings) -> Vec<Zo
         );
     }
     zoom_keyframes
+}
+
+/// 旧エンジン（v4）のカメラトラックを求める（評価用, Issue #28）。
+/// `compose_frames` と同じく、出力時刻 t までのキーフレームを適用してからバネを dt 進め、
+/// フレーム内にクランプしたビューポートをカメラ状態とする。
+pub fn legacy_camera_track(data: &RecordingData, settings: &AppSettings, fps: u32) -> CameraTrack {
+    let keyframes = plan_export_keyframes(data, settings);
+    let (w, h) = (data.width() as f64, data.height() as f64);
+    let mut viewport = AnimatedViewport::new(w, h);
+    let dt = 1.0 / fps.max(1) as f64;
+    let mut kf_index = 0;
+    let frames = data
+        .output_frame_times(fps)
+        .into_iter()
+        .map(|time_ms| {
+            while kf_index < keyframes.len() && keyframes[kf_index].time_ms <= time_ms {
+                let kf = &keyframes[kf_index];
+                match &kf.spring_hint {
+                    Some(hint) => viewport.set_target_with_half_life(
+                        kf.target_x,
+                        kf.target_y,
+                        kf.zoom_level,
+                        hint.zoom_half_life,
+                        hint.pan_half_life,
+                    ),
+                    None => viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level),
+                }
+                kf_index += 1;
+            }
+            viewport.update(dt);
+            let vp = viewport.current_viewport(w, h);
+            CameraState {
+                center_x: vp.x + vp.width / 2.0,
+                center_y: vp.y + vp.height / 2.0,
+                zoom: vp.zoom,
+            }
+        })
+        .collect();
+    CameraTrack { fps, frames }
 }
 
 /// Generate zoom keyframes for a recording (used by Timeline UI).
@@ -661,7 +702,7 @@ pub fn generate_thumbnail(recording_id: &str) -> Result<String> {
 
 // --- FFmpeg discovery ---
 
-fn find_ffmpeg() -> Result<String> {
+pub(crate) fn find_ffmpeg() -> Result<String> {
     // Try bundled ffmpeg first (next to exe)
     let exe_dir = std::env::current_exe()
         .ok()

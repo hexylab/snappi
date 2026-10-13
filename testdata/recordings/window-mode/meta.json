@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "id": "synthetic-window-mode",
+  "screen_width": 1280,
+  "screen_height": 800,
+  "fps": 30,
+  "start_time": "2026-10-13T12:00:00+09:00",
+  "duration_ms": 20000,
+  "has_audio": false,
+  "monitor_scale": 1.0,
+  "recording_dir": "",
+  "recording_mode": "window",
+  "window_title": "Synthetic",
+  "window_initial_rect": [
+    200,
+    100,
+    1480,
+    900
+  ],
+  "frame_count": 600
+}

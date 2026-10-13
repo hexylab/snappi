@@ -1,0 +1,23 @@
+{
+  "description": "ウィンドウモードでの録画（録画中にウィンドウを移動）",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 8852,
+      "x": 400,
+      "y": 200
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 9352,
+      "to_ms": 11328,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 15328,
+      "to_ms": 18000
+    }
+  ]
+}

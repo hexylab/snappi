@@ -1,0 +1,23 @@
+{
+  "description": "ドラッグ＆ドロップと長いスクロール",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 3560,
+      "x": 1400,
+      "y": 500
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 6560,
+      "to_ms": 14840,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 18840,
+      "to_ms": 22000
+    }
+  ]
+}

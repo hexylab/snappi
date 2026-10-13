@@ -1,0 +1,4 @@
+{"type": "ui_menu_open", "t": 2246, "control": "Menu", "name": "File", "rect": [0, 30, 300, 400]}
+{"type": "ui_menu_close", "t": 3622, "control": "Menu", "name": "File"}
+{"type": "ui_dialog_open", "t": 3892, "control": "Window", "name": "Save As", "rect": [560, 240, 1360, 840]}
+{"type": "ui_dialog_close", "t": 8478, "control": "Window", "name": "Save As"}
