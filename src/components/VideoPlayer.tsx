@@ -1,14 +1,14 @@
 import { createSignal, createEffect, createMemo, onCleanup, For, Show } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ZoomKeyframe } from "../lib/types";
+import type { CameraTrack } from "../lib/generated/CameraTrack";
 import type { ZoomSegment } from "../lib/zoomSegments";
-import { computeViewportAt } from "../lib/springMath";
 
 interface Props {
   recordingDir: string;
   frameCount: number;
   durationMs: number;
-  keyframes?: ZoomKeyframe[];
+  /** ズームプレビューに使うカメラトラック（バックエンドの get_camera_track） */
+  cameraTrack?: CameraTrack | null;
   segments: ZoomSegment[];
   selectedSegment?: ZoomSegment | null;
   seekToTimeMs?: number;
@@ -76,21 +76,16 @@ export default function VideoPlayer(props: Props) {
     return 1.0;
   };
 
-  // Compute animated viewport at current time (Spring physics simulation)
+  // 現在時刻のカメラのビューポート（カメラトラックの「その時刻以前で最新」のフレーム）
   const viewport = createMemo(() => {
-    if (
-      !props.showZoomPreview ||
-      !props.keyframes?.length ||
-      !props.screenWidth ||
-      !props.screenHeight
-    )
+    const track = props.cameraTrack;
+    if (!props.showZoomPreview || !track?.frames.length || !props.screenWidth || !props.screenHeight)
       return null;
-    return computeViewportAt(
-      props.keyframes,
-      currentTimeMs(),
-      props.screenWidth,
-      props.screenHeight,
-    );
+    const k = Math.min(track.frames.length - 1, Math.max(0, Math.floor((currentTimeMs() * track.fps) / 1000)));
+    const cam = track.frames[k];
+    const width = props.screenWidth / cam.zoom;
+    const height = props.screenHeight / cam.zoom;
+    return { x: cam.center_x - width / 2, y: cam.center_y - height / 2, width, height, zoom: cam.zoom };
   });
 
   // Playback loop

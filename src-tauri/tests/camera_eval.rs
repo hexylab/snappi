@@ -33,11 +33,8 @@ fn all_recordings_can_be_evaluated() {
     }
 }
 
-/// すべての評価用録画がメトリクス基準と expect.json を満たすこと。
-/// 旧エンジンは満たさないため、新エンジン (#29) が完成するまでは ignore にしておく。
-/// 実行: cargo test --test camera_eval -- --ignored --nocapture
+/// すべての評価用録画がメトリクス基準と expect.json を満たすこと
 #[test]
-#[ignore = "新カメラエンジン (#29) の完成後に有効化する"]
 fn all_recordings_meet_camera_spec() {
     let mut failures = Vec::new();
     for dir in recording_dirs() {

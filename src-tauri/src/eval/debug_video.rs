@@ -9,7 +9,6 @@
 
 use crate::camera::{self, spec, ActivityKind, CameraTrack, Viewport};
 use crate::config::RecordingEvent;
-use crate::engine::analyzer::event_timestamp;
 use crate::eval::metrics::zoomed_runs;
 use crate::recording_data::RecordingData;
 use anyhow::{anyhow, Context, Result};
@@ -91,7 +90,7 @@ pub fn render(data: &RecordingData, track: &CameraTrack, output: &Path) -> Resul
 
         // イベント
         for e in recent_events(&data.events, t, RING_MS) {
-            let age = (t - event_timestamp(e)) as f64;
+            let age = (t - e.timestamp()) as f64;
             match e {
                 RecordingEvent::Click { x, y, .. } => {
                     let r = (10.0 + 30.0 * age / RING_MS as f64) * scale;
@@ -133,8 +132,8 @@ pub fn render(data: &RecordingData, track: &CameraTrack, output: &Path) -> Resul
 
 /// 時刻 `t` 以前 `window_ms` 以内のイベント
 fn recent_events(events: &[RecordingEvent], t: u64, window_ms: u64) -> impl Iterator<Item = &RecordingEvent> {
-    let end = events.partition_point(|e| event_timestamp(e) <= t);
-    let start = events.partition_point(|e| event_timestamp(e) + window_ms < t);
+    let end = events.partition_point(|e| e.timestamp() <= t);
+    let start = events.partition_point(|e| e.timestamp() + window_ms < t);
     events[start..end.max(start)].iter()
 }
 
@@ -236,7 +235,7 @@ mod tests {
     fn test_recent_events_window() {
         let key = |t| RecordingEvent::Key { t, key: "Character".into(), modifiers: vec![] };
         let events = vec![key(100), key(500), key(900), key(1500)];
-        let ts: Vec<u64> = recent_events(&events, 1000, 500).map(event_timestamp).collect();
+        let ts: Vec<u64> = recent_events(&events, 1000, 500).map(RecordingEvent::timestamp).collect();
         assert_eq!(ts, vec![500, 900]);
     }
 }

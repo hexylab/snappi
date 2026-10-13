@@ -1,9 +1,17 @@
-//! カメラ（ズーム・パン）の共通の型と、仕様上の「アクティビティ」の定義 (Issue #28)。
+//! カメラ（ズーム・パン）エンジン (Issue #28, #29)。仕様は `docs/camera-spec-v5.md`。
 //!
-//! カメラエンジンはここで定義する `CameraTrack` を出力し、評価 (`crate::eval`) はそれを検証する。
+//! データの流れ: イベント → `auto_segments`（ZoomSegment 列）→ `camera_track`（各出力フレームの
+//! `CameraState`）→ 合成。評価 (`crate::eval`) は `CameraTrack` を検証する。
 //! 座標はすべてキャプチャ領域基準（フレーム左上が原点）の px。
 
+pub mod config;
+pub mod segments;
 pub mod spec;
+pub mod track;
+
+pub use config::{CameraConfig, ZoomStrength};
+pub use segments::{auto_segments, FocusMode, ZoomSegment};
+pub use track::camera_track;
 
 use crate::config::RecordingEvent;
 use crate::recording_data::output_frame_time;
@@ -12,6 +20,8 @@ use serde::{Deserialize, Serialize};
 /// ある時刻のカメラの状態。ビューポートは `(center_x, center_y)` を中心とする
 /// 「フレームの 1/zoom の大きさ」の矩形。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct CameraState {
     pub center_x: f64,
     pub center_y: f64,
@@ -79,6 +89,8 @@ impl Viewport {
 /// カメラエンジンの出力。出力フレーム k（時刻 `output_frame_time(k, fps)`）ごとのカメラ状態。
 /// エクスポートの出力フレームと 1 対 1 に対応する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct CameraTrack {
     pub fps: u32,
     pub frames: Vec<CameraState>,
@@ -181,7 +193,7 @@ pub fn group_activities(activities: &[Activity], gap_ms: u64) -> Vec<(u64, u64)>
 
 /// 時刻 `t_ms` 以前で最新のカーソル位置（マウス移動・クリック・スクロールの位置）
 pub fn cursor_at(events: &[RecordingEvent], t_ms: u64) -> Option<(f64, f64)> {
-    let end = events.partition_point(|e| crate::engine::analyzer::event_timestamp(e) <= t_ms);
+    let end = events.partition_point(|e| e.timestamp() <= t_ms);
     events[..end].iter().rev().find_map(|e| match e {
         RecordingEvent::MouseMove { x, y, .. }
         | RecordingEvent::Click { x, y, .. }

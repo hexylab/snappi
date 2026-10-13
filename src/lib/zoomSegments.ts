@@ -1,5 +1,10 @@
-import type { ZoomKeyframe } from "./types";
+import type { ZoomSegment as BackendZoomSegment } from "./generated/ZoomSegment";
 
+/**
+ * 編集 UI 用のズーム区間。バックエンドの `ZoomSegment`（src/lib/generated）と相互に変換する。
+ * - manualCenter: true なら固定位置（focus: Fixed）、false なら注目点を自動追従（focus: Auto）
+ * - manualZoom: true なら区間の倍率、false ならズーム強さの既定倍率（zoom: null）
+ */
 export interface ZoomSegment {
   id: number;
   startMs: number;
@@ -7,14 +12,14 @@ export interface ZoomSegment {
   zoomLevel: number;
   centerX: number;
   centerY: number;
-  /** ユーザーが centerX/centerY を手動で変更したか。true の場合、リサイズ等の自動再計算で上書きしない */
+  /** ユーザーが centerX/centerY を手動で設定したか（固定位置）。false なら自動追従 */
   manualCenter?: boolean;
-  /** ユーザーが zoomLevel を手動で変更したか。true の場合、リサイズ等の自動再計算で上書きしない */
+  /** ユーザーが zoomLevel を手動で変更したか。false ならズーム強さの既定倍率 */
   manualZoom?: boolean;
 }
 
-export const ZOOM_THRESHOLD = 1.05;
-export const DEFAULT_ZOOM = 2.0;
+/** ズーム強さ「標準」の倍率（src-tauri/src/camera/spec.rs の ZOOM_STANDARD） */
+export const DEFAULT_ZOOM = 1.8;
 export const DEFAULT_SEGMENT_DURATION_MS = 3000;
 
 let nextId = 1;
@@ -22,137 +27,34 @@ export function generateSegmentId(): number {
   return nextId++;
 }
 
-/** center座標が大きく変化したら別シーンとみなす閾値 (px) */
-const CENTER_JUMP_THRESHOLD = 200;
-
-/**
- * KF配列 → セグメント配列
- * zoom_level > ZOOM_THRESHOLD の連続区間をグループ化。
- * Smooth遷移でzoomが下がらなくてもcenter座標が大きくジャンプした場合は
- * 別セグメントとして分割する（zoom_plannerのclose-scene Smooth遷移対応）。
- */
-export function keyframesToSegments(kfs: ZoomKeyframe[]): ZoomSegment[] {
-  if (!kfs.length) return [];
-
-  const sorted = [...kfs].sort((a, b) => a.time_ms - b.time_ms);
-  const segments: ZoomSegment[] = [];
-
-  let segStart: ZoomKeyframe | null = null;
-  let maxZoom = 1.0;
-  let centerX = 0;
-  let centerY = 0;
-
-  const flushSegment = (endMs: number) => {
-    if (!segStart) return;
-    segments.push({
-      id: generateSegmentId(),
-      startMs: segStart.time_ms,
-      endMs,
-      zoomLevel: maxZoom,
-      centerX,
-      centerY,
-    });
-    segStart = null;
-    maxZoom = 1.0;
-  };
-
-  for (let i = 0; i < sorted.length; i++) {
-    const kf = sorted[i];
-
-    if (kf.zoom_level > ZOOM_THRESHOLD) {
-      if (!segStart) {
-        segStart = kf;
-        maxZoom = kf.zoom_level;
-        centerX = kf.target_x;
-        centerY = kf.target_y;
-      } else {
-        // center座標が大きくジャンプした場合は別セグメントとして分割
-        const dx = kf.target_x - centerX;
-        const dy = kf.target_y - centerY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > CENTER_JUMP_THRESHOLD) {
-          // 現在のセグメントをこのKFの時刻で閉じる
-          flushSegment(kf.time_ms);
-          // 新しいセグメントを開始
-          segStart = kf;
-          maxZoom = kf.zoom_level;
-          centerX = kf.target_x;
-          centerY = kf.target_y;
-        } else {
-          if (kf.zoom_level > maxZoom) {
-            maxZoom = kf.zoom_level;
-          }
-        }
-      }
-    } else {
-      if (segStart) {
-        flushSegment(kf.time_ms);
-      }
-    }
-  }
-
-  // 最後まで zoomed だった場合
-  if (segStart) {
-    const lastKf = sorted[sorted.length - 1];
-    flushSegment(lastKf.time_ms + DEFAULT_SEGMENT_DURATION_MS);
-  }
-
-  return segments;
-}
-
-/**
- * セグメント配列 → KF配列
- * 各セグメントの前後にSpringIn/Out KFを生成
- */
-export function segmentsToKeyframes(
-  segments: ZoomSegment[],
+/** バックエンドの区間 → 編集用の区間。自動追従の区間は中心を画面中央として表示する */
+export function fromBackendSegment(
+  seg: BackendZoomSegment,
   screenWidth: number,
   screenHeight: number,
-): ZoomKeyframe[] {
-  const kfs: ZoomKeyframe[] = [];
-  const sorted = [...segments].sort((a, b) => a.startMs - b.startMs);
-
-  // t=0 の Overview KF
-  kfs.push({
-    time_ms: 0,
-    target_x: screenWidth / 2,
-    target_y: screenHeight / 2,
-    zoom_level: 1.0,
-    transition: "Smooth",
-  });
-
-  for (const seg of sorted) {
-    // SpringIn: ズーム開始
-    kfs.push({
-      time_ms: seg.startMs,
-      target_x: seg.centerX,
-      target_y: seg.centerY,
-      zoom_level: seg.zoomLevel,
-      transition: "SpringIn",
-    });
-
-    // SpringOut: ズーム終了 → 全体表示に戻る
-    kfs.push({
-      time_ms: seg.endMs,
-      target_x: screenWidth / 2,
-      target_y: screenHeight / 2,
-      zoom_level: 1.0,
-      transition: "SpringOut",
-    });
-  }
-
-  // time_msでソート
-  kfs.sort((a, b) => a.time_ms - b.time_ms);
-
-  return kfs;
+): ZoomSegment {
+  const fixed = seg.focus.type === "Fixed" ? seg.focus : null;
+  return {
+    id: generateSegmentId(),
+    startMs: seg.start_ms,
+    endMs: seg.end_ms,
+    zoomLevel: seg.zoom ?? DEFAULT_ZOOM,
+    centerX: fixed ? fixed.x : screenWidth / 2,
+    centerY: fixed ? fixed.y : screenHeight / 2,
+    manualCenter: fixed !== null,
+    manualZoom: seg.zoom !== null,
+  };
 }
 
-/**
- * 指定時刻がどのセグメント内にあるか検索
- */
-export function findSegmentAtTime(
-  segments: ZoomSegment[],
-  timeMs: number,
-): ZoomSegment | undefined {
-  return segments.find(s => timeMs >= s.startMs && timeMs <= s.endMs);
+/** 編集用の区間 → バックエンドの区間 */
+export function toBackendSegment(seg: ZoomSegment): BackendZoomSegment {
+  return {
+    id: `ui-${seg.id}`,
+    start_ms: Math.round(seg.startMs),
+    end_ms: Math.round(seg.endMs),
+    zoom: seg.manualZoom ? seg.zoomLevel : null,
+    focus: seg.manualCenter
+      ? { type: "Fixed", x: seg.centerX, y: seg.centerY }
+      : { type: "Auto" },
+  };
 }

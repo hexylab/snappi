@@ -1,4 +1,7 @@
-use super::spring::{Spring, SpringHalfLife};
+use super::spring::Spring;
+
+/// カーソルのスムージングに使うバネの半減期（秒）
+const CURSOR_SMOOTHING_HALF_LIFE: f64 = 0.05;
 
 pub struct CursorSmoother {
     spring_x: Spring,
@@ -23,7 +26,7 @@ impl CursorSmoother {
         }
 
         let mut result = Vec::with_capacity(raw_positions.len());
-        let half_life = SpringHalfLife::CURSOR_SMOOTHING;
+        let half_life = CURSOR_SMOOTHING_HALF_LIFE;
 
         // Initialize to first position
         self.spring_x.snap(raw_positions[0].1);

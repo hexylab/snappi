@@ -13,11 +13,11 @@ cargo test --features ts-export --lib
 
 ## 対象型
 
-`src-tauri/src/config/mod.rs` の下記に `#[cfg_attr(feature = "ts-export", ts(export))]` が
-付与された構造体が対象:
+`#[cfg_attr(feature = "ts-export", ts(export))]` が付与された構造体が対象:
 
-- RecordingMeta, RecordingInfo, RecordingMode, WindowInfo, TimelineEvent
-- ExportProgress, ExportFormat, QualityPreset, RecordingState
+- `src-tauri/src/config/mod.rs`: RecordingMeta, RecordingInfo, RecordingMode, WindowInfo, TimelineEvent,
+  ExportProgress, ExportFormat, QualityPreset, RecordingState
+- `src-tauri/src/camera/`: ZoomSegment, FocusMode, ZoomStrength, CameraState, CameraTrack
 
 ## 既存の `src/lib/types.ts` との関係
 

@@ -1,13 +1,8 @@
-use crate::camera::{CameraState, CameraTrack};
+use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment};
 use crate::config::defaults::OutputStyle;
 use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent};
 use crate::engine::compositor::{ClickEffect, Compositor, CursorKind, KeyOverlay};
 use crate::engine::cursor_smoother::CursorSmoother;
-use crate::engine::frame_differ::{self, ChangeRegion};
-use crate::engine::preprocessor::preprocess;
-use crate::engine::spring::AnimatedViewport;
-use crate::engine::scene_splitter::{self, split_into_scenes, Scene};
-use crate::engine::zoom_planner::{generate_zoom_plan, ZoomKeyframe};
 use crate::export::presets::EncodingParams;
 use crate::recording_data::RecordingData;
 use anyhow::Result;
@@ -22,11 +17,6 @@ pub type ProgressFn = Box<dyn Fn(&str, f64) + Send>;
 /// 最終出力は H.264 等でさらに圧縮されるため、中間段階で 95 を切る必要はほぼ無い。
 /// BMP (1920x1080 で約 5.9MB) から JPEG q=95 (約 0.4MB) へ約 15 倍のディスク削減。
 const INTERMEDIATE_JPEG_QUALITY: u8 = 95;
-
-/// エクスポート時のフレーム差分のサンプリング間隔（フレーム数）
-const EXPORT_DIFF_SAMPLE_INTERVAL: u64 = 5;
-/// タイムライン UI 用のフレーム差分のサンプリング間隔（応答性重視で粗くする）
-const UI_DIFF_SAMPLE_INTERVAL: u64 = 10;
 
 /// RGB イメージを JPEG として高品質で保存するヘルパー。
 fn save_rgb_as_jpeg(
@@ -70,52 +60,36 @@ fn unique_output_path(output_dir: &Path, start_time: &str, format: &ExportFormat
         .expect("unbounded range always yields a free name")
 }
 
+/// 録画を書き出す。`segments` が None なら、設定のズーム強さでズーム区間を自動生成する。
 pub fn export(
     recording_id: &str,
     format: &ExportFormat,
     quality: &QualityPreset,
     settings: &AppSettings,
+    segments: Option<Vec<ZoomSegment>>,
     progress: Option<&ProgressFn>,
 ) -> Result<String> {
     let data = RecordingData::load_by_id(recording_id)?;
 
     log::info!("Starting effects composition for recording {}", recording_id);
     if let Some(cb) = progress { cb("analyzing", 0.0); }
-    let keyframes = plan_export_keyframes(&data, settings);
+    let config = CameraConfig::from_strength(settings.effects.zoom_strength);
+    let segments = segments.unwrap_or_else(|| camera::auto_segments(&data, &config));
+    log::info!("{} zoom segments", segments.len());
+    for seg in &segments {
+        log::info!("  {}: {}ms-{}ms zoom={:?} focus={:?}", seg.id, seg.start_ms, seg.end_ms, seg.zoom, seg.focus);
+    }
 
-    export_recording_data(&data, &keyframes, format, quality, settings, progress)
-}
-
-/// Export with custom keyframes (from Timeline UI edits).
-pub fn export_with_custom_keyframes(
-    recording_id: &str,
-    keyframes: Vec<ZoomKeyframe>,
-    format: &ExportFormat,
-    quality: &QualityPreset,
-    settings: &AppSettings,
-    progress: Option<&ProgressFn>,
-) -> Result<String> {
-    let data = RecordingData::load_by_id(recording_id)?;
-    export_recording_data(&data, &keyframes, format, quality, settings, progress)
-}
-
-fn export_recording_data(
-    data: &RecordingData,
-    keyframes: &[ZoomKeyframe],
-    format: &ExportFormat,
-    quality: &QualityPreset,
-    settings: &AppSettings,
-    progress: Option<&ProgressFn>,
-) -> Result<String> {
     let params = EncodingParams::from_preset(quality, data.width(), data.height());
     let style = OutputStyle::from_settings(&params, settings);
+    let track = camera::camera_track(&data, &segments, &config, params.fps);
 
     let output_dir = PathBuf::from(&settings.output.save_directory);
     std::fs::create_dir_all(&output_dir)?;
     let output_path = unique_output_path(&output_dir, &data.meta.start_time, format);
 
     if let Some(cb) = progress { cb("composing", 0.0); }
-    let temp_dir = compose_frames(data, settings, style, keyframes, params.fps, progress)?;
+    let temp_dir = compose_frames(&data, settings, style, &track, progress)?;
     let composed_frames_dir = temp_dir.path().join("frames");
     log::info!("Effects composition complete ({} fps), encoding...", params.fps);
 
@@ -131,249 +105,6 @@ fn export_recording_data(
     if let Some(cb) = progress { cb("complete", 1.0); }
     log::info!("Export complete: {}", output_path.display());
     Ok(output_path.to_string_lossy().to_string())
-}
-
-/// シーン分割と、フレーム差分によるシーン BBox の拡張を行う。
-/// 返り値の ChangeRegion は zoom_planner のアイドル判定にも使う。
-fn analyze_scenes(
-    data: &RecordingData,
-    events: &[RecordingEvent],
-    settings: &AppSettings,
-    diff_sample_interval: u64,
-) -> (Vec<Scene>, Vec<ChangeRegion>) {
-    let (w, h) = (data.width() as f64, data.height() as f64);
-    let max_zoom = settings.effects.max_zoom;
-    let mut scenes = split_into_scenes(events, w, h, max_zoom);
-
-    let mut change_regions = Vec::new();
-    if settings.effects.auto_zoom_enabled {
-        let diff_config = frame_differ::DiffConfig {
-            sample_interval: diff_sample_interval,
-            ..frame_differ::DiffConfig::default()
-        };
-        match frame_differ::detect_frame_changes(
-            &data.frames_dir(),
-            &data.frame_times,
-            &extract_mouse_positions(events),
-            data.width(),
-            data.height(),
-            &diff_config,
-        ) {
-            Ok(diff_result) => {
-                log::info!(
-                    "Frame diff: {} change regions detected ({} pairs analyzed, {} excluded)",
-                    diff_result.regions.len(),
-                    diff_result.pairs_analyzed,
-                    diff_result.pairs_excluded,
-                );
-                change_regions = diff_result.regions;
-                if settings.effects.frame_diff_enabled {
-                    scene_splitter::expand_scenes_with_change_regions(
-                        &mut scenes, &change_regions, w, h, max_zoom,
-                    );
-                }
-            }
-            Err(e) => {
-                log::warn!("Frame diff analysis failed, using event-only BBox: {}", e);
-            }
-        }
-    }
-
-    (scenes, change_regions)
-}
-
-/// エクスポート用のズームキーフレームを生成する。
-fn plan_export_keyframes(data: &RecordingData, settings: &AppSettings) -> Vec<ZoomKeyframe> {
-    let preprocessed = preprocess(&data.events);
-    log::info!(
-        "Preprocessed {} raw events → {} thinned events, {} drags detected",
-        data.events.len(),
-        preprocessed.events.len(),
-        preprocessed.drags.len(),
-    );
-    let events = preprocessed.events;
-
-    let (mut scenes, change_regions) =
-        analyze_scenes(data, &events, settings, EXPORT_DIFF_SAMPLE_INTERVAL);
-
-    // Phase A (Issue #23): ui_events.jsonl の矩形を各シーンに紐付け
-    crate::engine::ui_context::attach_ui_rects_to_scenes(
-        &mut scenes,
-        &events,
-        data.width() as f64,
-        data.height() as f64,
-    );
-
-    let zoom_keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&scenes, &data.meta, &settings.effects, &change_regions)
-    } else {
-        Vec::new()
-    };
-    log::info!(
-        "Analyzed {} events → {} scenes → {} zoom keyframes",
-        events.len(),
-        scenes.len(),
-        zoom_keyframes.len(),
-    );
-    for scene in &scenes {
-        log::info!(
-            "  Scene #{}: {}ms-{}ms | bbox({:.0},{:.0} {:.0}x{:.0}) | center({:.0},{:.0}) | zoom {:.2}x | {} events",
-            scene.id,
-            scene.start_ms,
-            scene.end_ms,
-            scene.bbox.x, scene.bbox.y, scene.bbox.width, scene.bbox.height,
-            scene.center_x, scene.center_y,
-            scene.zoom_level,
-            scene.event_count,
-        );
-    }
-    zoom_keyframes
-}
-
-/// 旧エンジン（v4）のカメラトラックを求める（評価用, Issue #28）。
-/// `compose_frames` と同じく、出力時刻 t までのキーフレームを適用してからバネを dt 進め、
-/// フレーム内にクランプしたビューポートをカメラ状態とする。
-pub fn legacy_camera_track(data: &RecordingData, settings: &AppSettings, fps: u32) -> CameraTrack {
-    let keyframes = plan_export_keyframes(data, settings);
-    let (w, h) = (data.width() as f64, data.height() as f64);
-    let mut viewport = AnimatedViewport::new(w, h);
-    let dt = 1.0 / fps.max(1) as f64;
-    let mut kf_index = 0;
-    let frames = data
-        .output_frame_times(fps)
-        .into_iter()
-        .map(|time_ms| {
-            while kf_index < keyframes.len() && keyframes[kf_index].time_ms <= time_ms {
-                let kf = &keyframes[kf_index];
-                match &kf.spring_hint {
-                    Some(hint) => viewport.set_target_with_half_life(
-                        kf.target_x,
-                        kf.target_y,
-                        kf.zoom_level,
-                        hint.zoom_half_life,
-                        hint.pan_half_life,
-                    ),
-                    None => viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level),
-                }
-                kf_index += 1;
-            }
-            viewport.update(dt);
-            let vp = viewport.current_viewport(w, h);
-            CameraState {
-                center_x: vp.x + vp.width / 2.0,
-                center_y: vp.y + vp.height / 2.0,
-                zoom: vp.zoom,
-            }
-        })
-        .collect();
-    CameraTrack { fps, frames }
-}
-
-/// Generate zoom keyframes for a recording (used by Timeline UI).
-pub fn generate_keyframes_for_recording(
-    recording_id: &str,
-    settings: &AppSettings,
-) -> Result<Vec<ZoomKeyframe>> {
-    let data = RecordingData::load_by_id(recording_id)?;
-    let events = preprocess(&data.events).events;
-
-    let (mut scenes, change_regions) =
-        analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
-
-    // Phase A (Issue #23): ui_events.jsonl の矩形情報を各シーンに付与。
-    // scene.ui_rect が立ったシーンは zoom_planner で矩形ベースのズーム計算に切り替わる。
-    crate::engine::ui_context::attach_ui_rects_to_scenes(
-        &mut scenes,
-        &data.events,
-        data.width() as f64,
-        data.height() as f64,
-    );
-
-    let keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&scenes, &data.meta, &settings.effects, &change_regions)
-    } else {
-        Vec::new()
-    };
-
-    Ok(keyframes)
-}
-
-/// Get scene debug info for a recording (used by Timeline UI).
-pub fn get_recording_scenes(recording_id: &str, settings: &AppSettings) -> Result<Vec<Scene>> {
-    let data = RecordingData::load_by_id(recording_id)?;
-    let events = preprocess(&data.events).events;
-    let (scenes, _) = analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
-    Ok(scenes)
-}
-
-/// Apply scene edits (merge/split) and regenerate keyframes.
-///
-/// Loads events, creates auto-detected scenes, applies edits, then runs zoom_planner.
-pub fn apply_scene_edits_for_recording(
-    recording_id: &str,
-    edits: Vec<crate::engine::scene_splitter::SceneEditOp>,
-    settings: &AppSettings,
-) -> Result<(Vec<Scene>, Vec<ZoomKeyframe>)> {
-    let data = RecordingData::load_by_id(recording_id)?;
-    let events = preprocess(&data.events).events;
-    let (w, h) = (data.width() as f64, data.height() as f64);
-
-    let (scenes, change_regions) =
-        analyze_scenes(&data, &events, settings, UI_DIFF_SAMPLE_INTERVAL);
-
-    // Apply manual edits
-    let mut edited_scenes = scene_splitter::apply_scene_edits(
-        &scenes,
-        &edits,
-        &events,
-        w,
-        h,
-        settings.effects.max_zoom,
-    );
-
-    // Re-apply frame diff expansion to edited scenes (merge/split recomputes bbox from
-    // activity points only, so frame_diff regions need to be re-applied)
-    if settings.effects.frame_diff_enabled && !change_regions.is_empty() && !edits.is_empty() {
-        scene_splitter::expand_scenes_with_change_regions(
-            &mut edited_scenes,
-            &change_regions,
-            w,
-            h,
-            settings.effects.max_zoom,
-        );
-    }
-
-    // Phase A (Issue #23): edited_scenes にも UI 矩形を紐付け
-    crate::engine::ui_context::attach_ui_rects_to_scenes(&mut edited_scenes, &events, w, h);
-
-    // Regenerate keyframes from edited scenes
-    let keyframes = if settings.effects.auto_zoom_enabled {
-        generate_zoom_plan(&edited_scenes, &data.meta, &settings.effects, &change_regions)
-    } else {
-        Vec::new()
-    };
-
-    Ok((edited_scenes, keyframes))
-}
-
-/// Compute activity center for a time range (used by frontend segment merge/add).
-pub fn compute_activity_center_for_recording(
-    recording_id: &str,
-    start_ms: u64,
-    end_ms: u64,
-    settings: &AppSettings,
-) -> Result<(f64, f64, f64)> {
-    let data = RecordingData::load_by_id(recording_id)?;
-    let preprocessed = preprocess(&data.events);
-
-    Ok(scene_splitter::compute_activity_center(
-        &preprocessed.events,
-        start_ms,
-        end_ms,
-        data.width() as f64,
-        data.height() as f64,
-        settings.effects.max_zoom,
-    ))
 }
 
 /// Get recording events for Timeline UI (lightweight representation).
@@ -447,39 +178,38 @@ pub fn get_recording_events(recording_id: &str) -> Result<Vec<crate::config::Tim
 
 /// エフェクトを合成した出力フレームを一時ディレクトリに書き出す。
 ///
-/// 出力は `fps` で等間隔に作る。出力フレーム k（時刻 t = k / fps）には「t 以前で最も新しい
-/// 元フレーム」を使い、カーソル・クリック・キー表示・カメラもすべて時刻 t で評価する。
+/// 出力はカメラトラックの fps で等間隔に作る。出力フレーム k（時刻 t）には「t 以前で最も新しい
+/// 元フレーム」を使い、カーソル・クリック・キー表示も時刻 t で評価し、カメラはトラックの k 番目を使う。
 /// これにより実キャプチャが可変フレームレートでも、映像とイベントの時刻が揃う。
 fn compose_frames(
     data: &RecordingData,
     settings: &AppSettings,
     style: OutputStyle,
-    zoom_keyframes: &[ZoomKeyframe],
-    fps: u32,
+    track: &CameraTrack,
     progress: Option<&ProgressFn>,
 ) -> Result<tempfile::TempDir> {
     if data.frame_count() == 0 {
         return Err(anyhow::anyhow!("No frames found in recording"));
     }
 
-    let events = preprocess(&data.events).events;
+    let events = &data.events;
 
     // カーソル位置（座標は RecordingData でキャプチャ領域基準に変換済み）
-    let raw_positions = extract_mouse_positions(&events);
+    let raw_positions = extract_mouse_positions(events);
     let cursor_positions = if settings.effects.cursor_smoothing && !raw_positions.is_empty() {
         CursorSmoother::new().smooth(&raw_positions)
     } else {
         raw_positions
     };
-    let cursor_shapes = extract_cursor_shapes(&events);
+    let cursor_shapes = extract_cursor_shapes(events);
 
     let click_effects = if settings.effects.click_ring_enabled {
-        extract_click_effects(&events, style.click_ring_duration_ms)
+        extract_click_effects(events, style.click_ring_duration_ms)
     } else {
         Vec::new()
     };
     let key_overlays = if settings.effects.key_badge_enabled {
-        extract_key_overlays(&events, style.key_badge_duration_ms)
+        extract_key_overlays(events, style.key_badge_duration_ms)
     } else {
         Vec::new()
     };
@@ -491,28 +221,20 @@ fn compose_frames(
     let composed_frames_dir = temp_dir.path().join("frames");
     std::fs::create_dir_all(&composed_frames_dir)?;
 
-    let output_times = data.output_frame_times(fps);
-    let total = output_times.len();
-    let dt = 1.0 / fps.max(1) as f64;
+    let total = track.frames.len();
     log::info!(
         "Composing {} output frames at {} fps from {} captured frames",
         total,
-        fps,
+        track.fps,
         data.frame_count(),
     );
 
-    let mut kf_index = 0;
     let mut output_frame_count: u64 = 0;
     // 同じ元フレームが連続して使われることが多いため、直前に読んだフレームを使い回す
     let mut current: Option<(u64, image::RgbaImage)> = None;
 
-    for (k, &time_ms) in output_times.iter().enumerate() {
-        // Apply any zoom keyframes that have been reached
-        while kf_index < zoom_keyframes.len() && zoom_keyframes[kf_index].time_ms <= time_ms {
-            compositor.apply_keyframe(&zoom_keyframes[kf_index]);
-            kf_index += 1;
-        }
-
+    for (k, &camera) in track.frames.iter().enumerate() {
+        let time_ms = track.time_ms(k);
         let frame_idx = data.frame_index_at(time_ms);
         if current.as_ref().map(|(idx, _)| *idx) != Some(frame_idx) {
             match image::open(data.frame_path(frame_idx)) {
@@ -532,11 +254,11 @@ fn compose_frames(
         let composed = compositor.compose_frame(
             raw_frame,
             time_ms,
+            camera,
             cursor_pos,
             cursor_kind,
             &click_effects,
             active_key,
-            dt,
         );
 
         // 合成済みフレームを JPEG q=95 で保存（アルファ非対応のため RGB に変換）。

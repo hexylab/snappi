@@ -89,7 +89,7 @@ impl RecordingData {
 
         let mut events = read_jsonl::<RecordingEvent>(&dir.join("events.jsonl"));
         events.extend(read_jsonl::<RecordingEvent>(&dir.join("ui_events.jsonl")));
-        events.sort_by_key(crate::engine::analyzer::event_timestamp);
+        events.sort_by_key(RecordingEvent::timestamp);
 
         let origins = capture_origins(dir, &meta);
         to_capture_coords(&mut events, &origins);
@@ -218,7 +218,7 @@ fn to_capture_coords(events: &mut [RecordingEvent], origins: &CaptureOrigins) {
         return;
     }
     for event in events.iter_mut() {
-        let (ox, oy) = origin_at(origins, crate::engine::analyzer::event_timestamp(event));
+        let (ox, oy) = origin_at(origins, event.timestamp());
         translate_event(event, -ox, -oy);
     }
 }

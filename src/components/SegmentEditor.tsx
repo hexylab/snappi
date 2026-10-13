@@ -97,7 +97,9 @@ export default function SegmentEditor(props: Props) {
         <div class="flex items-center justify-between">
           <label class="text-zinc-400">中心位置</label>
           <span class="text-zinc-300 font-mono text-[10px]">
-            ({Math.round(props.segment.centerX)}, {Math.round(props.segment.centerY)})
+            {props.segment.manualCenter
+              ? `(${Math.round(props.segment.centerX)}, ${Math.round(props.segment.centerY)})`
+              : "自動追従"}
           </span>
         </div>
         <button
@@ -137,7 +139,7 @@ export default function SegmentEditor(props: Props) {
                 manualZoom: false,
               })
             }
-            title="自動再計算を有効に戻す（次回リサイズ時に再計算される）"
+            title="中心を自動追従に、倍率をズーム強さの既定値に戻す"
           >
             自動に戻す
           </button>

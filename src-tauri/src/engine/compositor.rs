@@ -1,6 +1,5 @@
 use super::effects::background::create_background_image;
-use super::spring::AnimatedViewport;
-use super::zoom_planner::ZoomKeyframe;
+use crate::camera::{CameraState, Viewport};
 use crate::config::defaults::OutputStyle;
 use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
@@ -49,7 +48,6 @@ struct CursorSprite {
 
 pub struct Compositor {
     style: OutputStyle,
-    viewport: AnimatedViewport,
     screen_width: f64,
     screen_height: f64,
     /// Cached background image (same every frame)
@@ -60,19 +58,14 @@ pub struct Compositor {
     hand_sprite: CursorSprite,
     /// Previous composed frame for motion blur
     prev_output: Option<RgbaImage>,
-    /// Previous viewport state for motion amount calculation
-    prev_vp_center: Option<(f64, f64, f64)>, // (cx, cy, zoom)
+    /// Previous camera state for motion amount calculation
+    prev_camera: Option<CameraState>,
     /// Whether motion blur is enabled
     motion_blur_enabled: bool,
 }
 
 impl Compositor {
     pub fn new(style: OutputStyle, screen_width: u32, screen_height: u32) -> Self {
-        let viewport = AnimatedViewport::new(
-            screen_width as f64,
-            screen_height as f64,
-        );
-
         // Load embedded cursor PNG, fallback to system capture, then to SDF sprite
         let (arrow_image, arrow_hotspot) = load_embedded_cursor()
             .or_else(|| {
@@ -90,7 +83,6 @@ impl Compositor {
 
         Self {
             style,
-            viewport,
             screen_width: screen_width as f64,
             screen_height: screen_height as f64,
             cached_background: None,
@@ -98,7 +90,7 @@ impl Compositor {
             ibeam_sprite: create_ibeam_sprite(),
             hand_sprite: create_hand_sprite(),
             prev_output: None,
-            prev_vp_center: None,
+            prev_camera: None,
             motion_blur_enabled: false,
         }
     }
@@ -107,35 +99,22 @@ impl Compositor {
         self.motion_blur_enabled = enabled;
     }
 
-    pub fn apply_keyframe(&mut self, kf: &ZoomKeyframe) {
-        if let Some(ref hint) = kf.spring_hint {
-            self.viewport.set_target_with_half_life(
-                kf.target_x,
-                kf.target_y,
-                kf.zoom_level,
-                hint.zoom_half_life,
-                hint.pan_half_life,
-            );
-        } else {
-            self.viewport.set_target(kf.target_x, kf.target_y, kf.zoom_level);
-        }
-    }
-
+    /// 1 フレームを合成する。`camera` はカメラトラックのこのフレームの状態（フレーム内にクランプ済み）。
     pub fn compose_frame(
         &mut self,
         raw_frame: &RgbaImage,
         frame_time_ms: u64,
+        camera: CameraState,
         cursor_pos: Option<(f64, f64)>,
         cursor_kind: CursorKind,
         click_effects: &[ClickEffect],
         key_overlay: Option<&KeyOverlay>,
-        dt: f64,
     ) -> RgbaImage {
-        // (1) Update spring animation
-        self.viewport.update(dt);
-
-        let vp = self.viewport.current_viewport(self.screen_width, self.screen_height);
-        let zoom = vp.zoom;
+        // (1) Camera viewport for this frame
+        let vp = camera.viewport(self.screen_width, self.screen_height);
+        let zoom = camera.zoom;
+        let (out_w, out_h) = (self.style.output_width as f64, self.style.output_height as f64);
+        let to_output = |x: f64, y: f64| to_output_coords(&vp, x, y, out_w, out_h);
 
         // (2) Crop and scale to output size（サブピクセル精度）
         let mut output = crop_and_scale(
@@ -150,14 +129,7 @@ impl Compositor {
 
         // (3) Draw cursor — scale with zoom to maintain consistent visual size
         if let Some((cx, cy)) = cursor_pos {
-            let (out_x, out_y) = self.viewport.to_output_coords(
-                cx,
-                cy,
-                self.style.output_width as f64,
-                self.style.output_height as f64,
-                self.screen_width,
-                self.screen_height,
-            );
+            let (out_x, out_y) = to_output(cx, cy);
             let cursor_scale = self.style.cursor_size_multiplier * zoom;
             let sprite = match cursor_kind {
                 CursorKind::Arrow => &self.arrow_sprite,
@@ -177,14 +149,7 @@ impl Compositor {
         // (4) Click ring effects — scale with zoom
         for effect in click_effects {
             if effect.is_active(frame_time_ms) {
-                let (out_x, out_y) = self.viewport.to_output_coords(
-                    effect.x,
-                    effect.y,
-                    self.style.output_width as f64,
-                    self.style.output_height as f64,
-                    self.screen_width,
-                    self.screen_height,
-                );
+                let (out_x, out_y) = to_output(effect.x, effect.y);
                 let progress = effect.progress(frame_time_ms);
                 draw_click_ring(
                     &mut output,
@@ -240,17 +205,11 @@ impl Compositor {
 
         // Motion blur: blend with previous frame when viewport is moving fast
         if self.motion_blur_enabled {
-            let current_vp = (
-                self.viewport.center_x.position,
-                self.viewport.center_y.position,
-                self.viewport.zoom.position,
-            );
-
-            if let (Some(ref prev_frame), Some(prev_vp)) = (&self.prev_output, self.prev_vp_center) {
+            if let (Some(ref prev_frame), Some(prev)) = (&self.prev_output, self.prev_camera) {
                 if prev_frame.dimensions() == canvas.dimensions() {
-                    let dx = (current_vp.0 - prev_vp.0) / self.screen_width;
-                    let dy = (current_vp.1 - prev_vp.1) / self.screen_height;
-                    let dz = (current_vp.2 - prev_vp.2).abs();
+                    let dx = (camera.center_x - prev.center_x) / self.screen_width;
+                    let dy = (camera.center_y - prev.center_y) / self.screen_height;
+                    let dz = (camera.zoom - prev.zoom).abs();
                     let motion = (dx * dx + dy * dy).sqrt() + dz;
 
                     // Only apply blur when motion exceeds threshold
@@ -261,7 +220,7 @@ impl Compositor {
                 }
             }
 
-            self.prev_vp_center = Some(current_vp);
+            self.prev_camera = Some(camera);
             self.prev_output = Some(canvas.clone());
         }
 
@@ -278,6 +237,11 @@ impl Compositor {
         }
         self.cached_background.as_ref().unwrap()
     }
+}
+
+/// キャプチャ領域の座標を、ビューポート `vp` を `out_w` x `out_h` に拡大した出力画像の座標に変換する
+fn to_output_coords(vp: &Viewport, x: f64, y: f64, out_w: f64, out_h: f64) -> (f64, f64) {
+    ((x - vp.x) / vp.width * out_w, (y - vp.y) / vp.height * out_h)
 }
 
 #[derive(Debug, Clone)]

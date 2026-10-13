@@ -29,7 +29,7 @@ npm run build
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
-### カメラの評価 (Issue #28)
+### カメラの評価 (Issue #28, #29)
 
 カメラ（ズーム・パン）の仕様は `docs/camera-spec-v5.md`。評価用データは `testdata/recordings/`。
 
@@ -39,8 +39,8 @@ cd src-tauri
 cargo run --bin snappi-eval -- ../testdata/recordings/vscode-typing --metrics
 # frames がある録画に、ビューポート・カーソル・イベント・区間を描き込んだ動画を出力（ffmpeg が必要。重いので --release 推奨）
 cargo run --release --bin snappi-eval -- <recording_dir> --debug-video out.mp4
-# 全シナリオに仕様を適用（新エンジン #29 完成までは ignore）
-cargo test --test camera_eval -- --ignored --nocapture
+# 全シナリオに仕様を適用（cargo test にも含まれる）
+cargo test --test camera_eval -- --nocapture
 # 全シナリオのメトリクスを Markdown の表で出力（仕様書 §9 のベースライン更新用）
 cargo run -q --bin snappi-eval -- ../testdata/recordings --table
 ```
@@ -48,7 +48,7 @@ cargo run -q --bin snappi-eval -- ../testdata/recordings --table
 - 実録画を評価シナリオに取り込むときは `python testdata/import_recording.py latest <シナリオ名>`
   （frames/audio を除いてコピーし、`--draft-expect` で expect.json の下書きを作る）。手順は `testdata/recordings/README.md`。
 
-- 評価するエンジンは `eval::compute_track` で切り替える（現在は旧エンジン `legacy_camera_track`）。
+- 評価は `eval::compute_track`（既定設定のズーム強さで `camera::auto_segments` → `camera::camera_track`）。
 - 仕様パラメータは `camera/spec.rs`、メトリクスは `eval/metrics.rs`。値を変えたら仕様書も更新する。
 - `src-tauri/Cargo.toml` に `default-run = "snappi"` があるため、`cargo run` は従来どおりアプリを起動する。
 
@@ -69,9 +69,16 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
        Audio → audio.wav
        Metadata → meta.json, dimensions.txt
 
-[エクスポート] Analyzer → Segments → ZoomPlanner → Keyframes
-              → Compositor(Spring物理) → FFmpeg → MP4/GIF/WebM
+[エクスポート] Events → camera::auto_segments（ZoomSegment 列。プレビューで編集したものを渡すことも可）
+              → camera::camera_track（出力フレームごとの CameraState）
+              → Compositor（CameraState のビューポートで切り抜き・カーソル等を合成）→ FFmpeg → MP4/GIF/WebM
 ```
+
+カメラエンジンは `src-tauri/src/camera/`:
+- `segments.rs`: 区間の自動生成（仕様 R1〜R5, F5）。純粋関数
+- `track.rs`: 出力 fps で決定的にシミュレーションしてカメラトラックを求める（F1〜F4, 遷移）
+- `config.rs`: `ZoomStrength`（設定「ズーム強さ」）から `CameraConfig` を作る
+- `spec.rs`: 仕様パラメータ。`engine/` には合成（`compositor.rs`）・バネ・カーソルスムージングだけが残る
 
 ### スレッドモデル
 
@@ -136,5 +143,8 @@ Rust側の型は `src-tauri/src/config/mod.rs` に集約。TypeScript側は以�
   - 通常ビルドでは ts-rs 依存は無効化されるため実行時コストゼロ
 
 `RecordingState`: `Idle | Recording | Paused | Processing`
+`ZoomStrength`: `Off | Subtle(1.5x) | Standard(1.8x, 既定) | Strong(2.2x)`（`EffectsSettings.zoom_strength`）
+`ZoomSegment`: `{ id, start_ms, end_ms, zoom: Option<f64>, focus: Auto | Fixed { x, y } }`（`camera::segments`）
+`CameraTrack`: `{ fps, frames: Vec<CameraState { center_x, center_y, zoom }> }`（`camera`）
 `ExportFormat`: `Mp4 | Gif | WebM`
 `QualityPreset`: `Social(1080p/30fps) | HighQuality(元解像度/60fps) | Lightweight(720p/24fps)`

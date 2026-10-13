@@ -1,14 +1,14 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show } from "solid-js";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { exportRecording, exportWithKeyframes, getRecordingsList, getZoomKeyframes, computeActivityCenter } from "../lib/commands";
+import { exportRecording, getAutoSegments, getCameraTrack, getRecordingsList } from "../lib/commands";
 import type { ExportFormat, ExportProgress, QualityPreset, RecordingInfo } from "../lib/types";
+import type { CameraTrack } from "../lib/generated/CameraTrack";
 import {
   type ZoomSegment,
-  keyframesToSegments,
-  segmentsToKeyframes,
+  fromBackendSegment,
+  toBackendSegment,
   DEFAULT_ZOOM,
   DEFAULT_SEGMENT_DURATION_MS,
-  ZOOM_THRESHOLD,
   generateSegmentId,
 } from "../lib/zoomSegments";
 import ExportButtons from "../components/ExportButtons";
@@ -38,14 +38,11 @@ export default function Preview(props: Props) {
 
   // --- セグメントベースのstate ---
   const [segments, setSegments] = createSignal<ZoomSegment[]>([]);
+  /** 自動生成した区間を読み込めたか。読み込めていなければ書き出し時にバックエンドで自動生成させる */
+  const [segmentsLoaded, setSegmentsLoaded] = createSignal(false);
   const [selectedSegmentId, setSelectedSegmentId] = createSignal<number | null>(null);
-
-  // セグメントからKF配列を派生（プレビュー・エクスポート用）
-  const derivedKeyframes = createMemo(() => {
-    const rec = recordingInfo();
-    if (!rec) return [];
-    return segmentsToKeyframes(segments(), rec.screen_width, rec.screen_height);
-  });
+  /** ズームプレビュー用のカメラトラック（区間を変えるたびにバックエンドで再計算） */
+  const [cameraTrack, setCameraTrack] = createSignal<CameraTrack | null>(null);
 
   // 選択中のセグメント
   const selectedSegment = createMemo(() => {
@@ -75,12 +72,14 @@ export default function Preview(props: Props) {
         console.error("Failed to load recording info:", e);
       }
 
-      // KFをプリフェッチしてセグメントに変換
+      // 自動生成したズーム区間を編集用の区間に変換
       try {
-        const kfs = await getZoomKeyframes(props.recordingId);
-        setSegments(keyframesToSegments(kfs));
+        const rec = recordingInfo();
+        const segs = await getAutoSegments(props.recordingId);
+        setSegments(segs.map((s) => fromBackendSegment(s, rec?.screen_width ?? 1920, rec?.screen_height ?? 1080)));
+        setSegmentsLoaded(true);
       } catch (e) {
-        console.error("Failed to preload keyframes:", e);
+        console.error("Failed to load zoom segments:", e);
       }
     }
 
@@ -114,12 +113,8 @@ export default function Preview(props: Props) {
     setExportedPath(null);
     setExportProgress({ stage: "starting", progress: 0, output_path: null });
     try {
-      const kfs = segmentsToKeyframes(segments(), rec.screen_width, rec.screen_height);
-      if (kfs.length > 1) {
-        await exportWithKeyframes(props.recordingId, kfs, format, quality());
-      } else {
-        await exportRecording(props.recordingId, format, quality());
-      }
+      const segs = segmentsLoaded() ? segments().map(toBackendSegment) : null;
+      await exportRecording(props.recordingId, format, quality(), segs);
     } catch (e) {
       setError(String(e));
       setExporting(false);
@@ -138,6 +133,19 @@ export default function Preview(props: Props) {
     }
   };
 
+  // --- ズームプレビュー: 区間が変わったらカメラトラックを再計算 ---
+  let trackRequest = 0;
+  createEffect(() => {
+    const segs = segments().map(toBackendSegment);
+    if (!showZoomPreview() || !props.recordingId) return;
+    const request = ++trackRequest;
+    getCameraTrack(props.recordingId, segs)
+      .then((track) => {
+        if (request === trackRequest) setCameraTrack(track);
+      })
+      .catch((e) => console.error("get_camera_track failed:", e));
+  });
+
   // --- セグメント選択時の自動シーク ---
   createEffect(() => {
     const seg = selectedSegment();
@@ -153,34 +161,7 @@ export default function Preview(props: Props) {
     setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
   };
 
-  // リサイズ終了時にBBox再計算 → center/zoomを更新
-  // ただしユーザーが手動で値を変更したフィールド（manualCenter/manualZoomフラグ）は保持する
-  const handleSegmentResizeEnd = async (id: number) => {
-    const seg = segments().find(s => s.id === id);
-    if (!seg || !props.recordingId) return;
-
-    // 両方とも手動編集済みなら再計算自体を行わない
-    if (seg.manualCenter && seg.manualZoom) return;
-
-    try {
-      const result = await computeActivityCenter(
-        props.recordingId, Math.round(seg.startMs), Math.round(seg.endMs),
-      );
-      const updates: Partial<ZoomSegment> = {};
-      if (!seg.manualCenter) {
-        updates.centerX = result.center_x;
-        updates.centerY = result.center_y;
-      }
-      if (!seg.manualZoom) {
-        updates.zoomLevel = Math.max(result.zoom_level, 1.0);
-      }
-      if (Object.keys(updates).length > 0) {
-        setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
-      }
-    } catch (e) { console.error("compute_activity_center failed (resize):", e); }
-  };
-
-  const addSegment = async (timeMs: number) => {
+  const addSegment = (timeMs: number) => {
     const rec = recordingInfo();
     const durationMs = rec?.duration_ms ?? timeMs + DEFAULT_SEGMENT_DURATION_MS;
 
@@ -207,21 +188,10 @@ export default function Preview(props: Props) {
     const endMs = Math.min(slotStart + DEFAULT_SEGMENT_DURATION_MS, slotEnd);
     if (endMs - slotStart < 100) return; // 最小幅未満なら追加しない
 
-    let centerX = rec ? rec.screen_width / 2 : 960;
-    let centerY = rec ? rec.screen_height / 2 : 540;
-    let zoomLevel = DEFAULT_ZOOM;
-
-    // Rust側でBBox再計算 → 正しいcenter取得
-    if (props.recordingId) {
-      try {
-        const result = await computeActivityCenter(
-          props.recordingId, Math.round(slotStart), Math.round(endMs),
-        );
-        centerX = result.center_x;
-        centerY = result.center_y;
-        if (result.zoom_level > ZOOM_THRESHOLD) zoomLevel = result.zoom_level;
-      } catch (e) { console.error("compute_activity_center failed (add):", e); }
-    }
+    // 中心は自動追従、倍率はズーム強さの既定値（手動で変更するまで）
+    const centerX = rec ? rec.screen_width / 2 : 960;
+    const centerY = rec ? rec.screen_height / 2 : 540;
+    const zoomLevel = DEFAULT_ZOOM;
 
     const newSeg: ZoomSegment = {
       id: generateSegmentId(),
@@ -243,48 +213,23 @@ export default function Preview(props: Props) {
     }
   };
 
-  const mergeSegments = async (id1: number, id2: number) => {
+  const mergeSegments = (id1: number, id2: number) => {
     const s1 = segments().find(s => s.id === id1);
     const s2 = segments().find(s => s.id === id2);
     if (!s1 || !s2) return;
 
-    const startMs = Math.min(s1.startMs, s2.startMs);
-    const endMs = Math.max(s1.endMs, s2.endMs);
-
-    // どちらかが手動編集されている場合はその値を優先（統合時に上書きしない）
-    const manualCenter = s1.manualCenter || s2.manualCenter;
-    const manualZoom = s1.manualZoom || s2.manualZoom;
-
-    // 手動編集された側の値を優先、なければ平均/最小
-    let centerX = s1.manualCenter ? s1.centerX : s2.manualCenter ? s2.centerX : (s1.centerX + s2.centerX) / 2;
-    let centerY = s1.manualCenter ? s1.centerY : s2.manualCenter ? s2.centerY : (s1.centerY + s2.centerY) / 2;
-    let zoomLevel = s1.manualZoom ? s1.zoomLevel : s2.manualZoom ? s2.zoomLevel : Math.min(s1.zoomLevel, s2.zoomLevel);
-
-    // 両方が自動の項目のみRust側でBBox再計算
-    if (props.recordingId && (!manualCenter || !manualZoom)) {
-      try {
-        const result = await computeActivityCenter(
-          props.recordingId, Math.round(startMs), Math.round(endMs),
-        );
-        if (!manualCenter) {
-          centerX = result.center_x;
-          centerY = result.center_y;
-        }
-        if (!manualZoom) {
-          zoomLevel = Math.max(result.zoom_level, 1.0);
-        }
-      } catch (e) { console.error("compute_activity_center failed (merge):", e); }
-    }
-
+    // 手動で設定した中心・倍率はそちらを優先し、どちらも自動なら自動のまま
+    const centerSrc = s1.manualCenter ? s1 : s2.manualCenter ? s2 : s1;
+    const zoomSrc = s1.manualZoom ? s1 : s2.manualZoom ? s2 : s1;
     const merged: ZoomSegment = {
       id: s1.id,
-      startMs,
-      endMs,
-      zoomLevel,
-      centerX,
-      centerY,
-      manualCenter,
-      manualZoom,
+      startMs: Math.min(s1.startMs, s2.startMs),
+      endMs: Math.max(s1.endMs, s2.endMs),
+      zoomLevel: zoomSrc.zoomLevel,
+      centerX: centerSrc.centerX,
+      centerY: centerSrc.centerY,
+      manualCenter: s1.manualCenter || s2.manualCenter,
+      manualZoom: s1.manualZoom || s2.manualZoom,
     };
     setSegments(prev =>
       prev.filter(s => s.id !== id1 && s.id !== id2).concat(merged).sort((a, b) => a.startMs - b.startMs)
@@ -346,7 +291,7 @@ export default function Preview(props: Props) {
                 recordingDir={rec().recording_dir}
                 frameCount={rec().frame_count}
                 durationMs={rec().duration_ms}
-                keyframes={derivedKeyframes()}
+                cameraTrack={cameraTrack()}
                 segments={segments()}
                 selectedSegment={selectedSegment()}
                 seekToTimeMs={seekTimeMs()}
@@ -423,7 +368,6 @@ export default function Preview(props: Props) {
                     onDeleteSegment={deleteSegment}
                     onUpdateSegment={updateSegment}
                     onMergeSegments={mergeSegments}
-                    onSegmentResizeEnd={handleSegmentResizeEnd}
                   />
 
                   {/* SegmentEditor: セグメント選択時のみ表示 */}

@@ -7,11 +7,10 @@ import type {
   ExportProgress,
   AppSettings,
   WindowInfo,
-  ZoomKeyframe,
-  SceneInfo,
   TimelineEvent,
-  SceneEditOp,
 } from "./types";
+import type { ZoomSegment } from "./generated/ZoomSegment";
+import type { CameraTrack } from "./generated/CameraTrack";
 
 export async function startRecording(): Promise<void> {
   return invoke("start_recording");
@@ -37,15 +36,18 @@ export async function getRecordingsList(): Promise<RecordingInfo[]> {
   return invoke("get_recordings_list");
 }
 
+/** 録画を書き出す。segments が null なら設定のズーム強さで区間を自動生成する */
 export async function exportRecording(
   recordingId: string,
   format: ExportFormat,
-  quality: QualityPreset
+  quality: QualityPreset,
+  segments: ZoomSegment[] | null,
 ): Promise<void> {
   return invoke("export_recording", {
     recordingId,
     format,
     quality,
+    segments,
   });
 }
 
@@ -75,49 +77,21 @@ export async function listWindows(): Promise<WindowInfo[]> {
   return invoke("list_windows");
 }
 
-export async function getZoomKeyframes(
-  recordingId: string
-): Promise<ZoomKeyframe[]> {
-  return invoke("get_zoom_keyframes", { recordingId });
+/** 設定のズーム強さで自動生成したズーム区間 */
+export async function getAutoSegments(recordingId: string): Promise<ZoomSegment[]> {
+  return invoke("get_auto_segments", { recordingId });
 }
 
-export async function getRecordingScenes(
-  recordingId: string
-): Promise<SceneInfo[]> {
-  return invoke("get_recording_scenes", { recordingId });
+/** ズーム区間からプレビュー用のカメラトラック（30fps）を求める */
+export async function getCameraTrack(
+  recordingId: string,
+  segments: ZoomSegment[],
+): Promise<CameraTrack> {
+  return invoke("get_camera_track", { recordingId, segments });
 }
 
 export async function getRecordingEvents(
   recordingId: string
 ): Promise<TimelineEvent[]> {
   return invoke("get_recording_events", { recordingId });
-}
-
-export async function exportWithKeyframes(
-  recordingId: string,
-  keyframes: ZoomKeyframe[],
-  format: ExportFormat,
-  quality: QualityPreset
-): Promise<void> {
-  return invoke("export_with_keyframes", {
-    recordingId,
-    keyframes,
-    format,
-    quality,
-  });
-}
-
-export async function applySceneEdits(
-  recordingId: string,
-  edits: SceneEditOp[]
-): Promise<{ scenes: SceneInfo[]; keyframes: ZoomKeyframe[] }> {
-  return invoke("apply_scene_edits", { recordingId, edits });
-}
-
-export async function computeActivityCenter(
-  recordingId: string,
-  startMs: number,
-  endMs: number,
-): Promise<{ center_x: number; center_y: number; zoom_level: number }> {
-  return invoke("compute_activity_center", { recordingId, startMs, endMs });
 }

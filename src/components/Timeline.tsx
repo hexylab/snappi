@@ -1,6 +1,6 @@
 import { createSignal, createMemo, Show, For, onMount } from "solid-js";
-import { getRecordingScenes, getRecordingEvents } from "../lib/commands";
-import type { SceneInfo, TimelineEvent } from "../lib/types";
+import { getRecordingEvents } from "../lib/commands";
+import type { TimelineEvent } from "../lib/types";
 import type { ZoomSegment } from "../lib/zoomSegments";
 import ZoomTrack from "./ZoomTrack";
 
@@ -24,11 +24,9 @@ interface Props {
 // 動画エディタ風に高めのレーン（編集しやすさ優先）
 const EVENT_LANE_HEIGHT = 48;
 const STATE_BAND_HEIGHT = 24;
-const SCENE_BAND_HEIGHT = 18;
 
 const EVENT_LANE_Y = 0;
 const STATE_BAND_Y = EVENT_LANE_HEIGHT;
-const SCENE_BAND_Y = STATE_BAND_Y + STATE_BAND_HEIGHT;
 
 type ZoomState = "fullscreen" | "workarea";
 
@@ -53,10 +51,8 @@ const ZOOM_LEVELS = [1, 2, 4, 8] as const;
 type ZoomLevel = typeof ZOOM_LEVELS[number];
 
 export default function Timeline(props: Props) {
-  const [scenes, setScenes] = createSignal<SceneInfo[]>([]);
   const [events, setEvents] = createSignal<TimelineEvent[]>([]);
   const [loading, setLoading] = createSignal(false);
-  const [hoveredSceneIdx, setHoveredSceneIdx] = createSignal<number | null>(null);
   const [hoveredEventIdx, setHoveredEventIdx] = createSignal<number | null>(null);
   const [tooltipPos, setTooltipPos] = createSignal<{ x: number; y: number } | null>(null);
   /** タイムラインの水平ズーム倍率。イベントが密集する長尺録画向け */
@@ -67,12 +63,7 @@ export default function Timeline(props: Props) {
   onMount(async () => {
     setLoading(true);
     try {
-      const [scns, evts] = await Promise.all([
-        getRecordingScenes(props.recordingId),
-        getRecordingEvents(props.recordingId),
-      ]);
-      setScenes(scns);
-      setEvents(evts);
+      setEvents(await getRecordingEvents(props.recordingId));
     } catch (e) {
       console.error("Failed to load timeline data:", e);
     }
@@ -136,31 +127,6 @@ export default function Timeline(props: Props) {
     return result;
   });
 
-  const hoveredSceneInfo = createMemo(() => {
-    const idx = hoveredSceneIdx();
-    if (idx === null) return null;
-    const scene = scenes()[idx];
-    if (!scene) return null;
-
-    const sceneEvents = events().filter(
-      (e) => e.time_ms >= scene.start_ms && e.time_ms <= scene.end_ms
-    );
-    const typeCounts: Record<string, number> = {};
-    for (const e of sceneEvents) {
-      typeCounts[e.event_type] = (typeCounts[e.event_type] || 0) + 1;
-    }
-
-    return {
-      id: scene.id,
-      start_ms: scene.start_ms,
-      end_ms: scene.end_ms,
-      duration_ms: scene.end_ms - scene.start_ms,
-      event_count: scene.event_count,
-      zoom_level: scene.zoom_level,
-      typeCounts,
-    };
-  });
-
   const currentState = createMemo(() => {
     const t = props.currentTimeMs;
     if (t === undefined) return null;
@@ -201,7 +167,7 @@ export default function Timeline(props: Props) {
     props.onSeekToTime?.(timeMs);
   };
 
-  const TOTAL_HEIGHT = EVENT_LANE_HEIGHT + STATE_BAND_HEIGHT + SCENE_BAND_HEIGHT;
+  const TOTAL_HEIGHT = EVENT_LANE_HEIGHT + STATE_BAND_HEIGHT;
 
   // ズーム段階を循環切り替え
   const cycleZoom = (dir: 1 | -1) => {
@@ -270,7 +236,7 @@ export default function Timeline(props: Props) {
               />
             </div>
 
-            {/* Event lane + state band + scene band */}
+            {/* Event lane + state band */}
             <div class="relative" style={{ height: `${TOTAL_HEIGHT + 20}px` }}>
           <div
             ref={containerRef}
@@ -379,73 +345,6 @@ export default function Timeline(props: Props) {
                 }}
               </For>
 
-              {/* === Scene interval band === */}
-              <rect
-                x="0" y={SCENE_BAND_Y}
-                width="1000" height={SCENE_BAND_HEIGHT}
-                fill="rgba(15,23,42,0.2)"
-              />
-              <For each={scenes()}>
-                {(scene, i) => {
-                  const x = () => timeToX(scene.start_ms, 1000);
-                  const w = () => Math.max(timeToX(scene.end_ms, 1000) - x(), 2);
-                  const color = () => i() % 2 === 0
-                    ? "rgba(139,92,246,0.4)"
-                    : "rgba(59,130,246,0.4)";
-                  return (
-                    <rect
-                      x={x()}
-                      y={SCENE_BAND_Y + 1}
-                      width={w()}
-                      height={SCENE_BAND_HEIGHT - 2}
-                      rx="1.5"
-                      fill={color()}
-                      stroke={hoveredSceneIdx() === i() ? "rgba(255,255,255,0.6)" : "none"}
-                      stroke-width="1"
-                      vector-effect="non-scaling-stroke"
-                      class="cursor-pointer"
-                      onMouseEnter={(e) => {
-                        setHoveredSceneIdx(i());
-                        setTooltipPos({ x: e.clientX, y: e.clientY });
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredSceneIdx(null);
-                        setTooltipPos(null);
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        props.onSeekToTime?.(scene.start_ms);
-                      }}
-                    />
-                  );
-                }}
-              </For>
-
-              {/* Scene band labels */}
-              <For each={scenes()}>
-                {(scene, i) => {
-                  const x = () => timeToX(scene.start_ms, 1000);
-                  const w = () => timeToX(scene.end_ms, 1000) - x();
-                  return (
-                    <Show when={w() > 25}>
-                      <text
-                        x={x() + w() / 2}
-                        y={SCENE_BAND_Y + SCENE_BAND_HEIGHT / 2 + 1}
-                        text-anchor="middle"
-                        dominant-baseline="central"
-                        fill="white"
-                        font-size="7"
-                        font-family="monospace"
-                        class="pointer-events-none select-none"
-                        style={{ opacity: "0.7" }}
-                      >
-                        S{scene.id}
-                      </text>
-                    </Show>
-                  );
-                }}
-              </For>
-
               {/* Current time playhead */}
               <Show when={props.currentTimeMs !== undefined}>
                 <line
@@ -472,7 +371,7 @@ export default function Timeline(props: Props) {
         </div>
 
         {/* Tooltip */}
-        <Show when={tooltipPos() && (hoveredSceneIdx() !== null || hoveredEventIdx() !== null)}>
+        <Show when={tooltipPos() && hoveredEventIdx() !== null}>
           <div
             class="fixed z-50 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-[11px] font-mono text-slate-300 shadow-xl pointer-events-none"
             style={{
@@ -480,36 +379,7 @@ export default function Timeline(props: Props) {
               top: `${tooltipPos()!.y - 10}px`,
             }}
           >
-            <Show when={hoveredSceneIdx() !== null && hoveredSceneInfo()}>
-              {(info) => (
-                <div class="space-y-1">
-                  <div class="text-slate-200 font-medium">シーン #{info().id}</div>
-                  <div>
-                    {formatTime(info().start_ms)} - {formatTime(info().end_ms)}
-                    <span class="text-slate-500 ml-1">({(info().duration_ms / 1000).toFixed(1)}s)</span>
-                  </div>
-                  <div>ズーム: <span class="text-purple-300">{info().zoom_level.toFixed(2)}x</span></div>
-                  <div class="text-slate-500">{info().event_count} アクティビティ</div>
-                  <div class="flex flex-wrap gap-1.5 mt-1">
-                    <For each={Object.entries(info().typeCounts)}>
-                      {([type_, count]) => (
-                        <span
-                          class="px-1.5 py-0.5 rounded text-[10px]"
-                          style={{
-                            background: EVENT_TYPE_CONFIG[type_]?.color ?? "rgba(100,116,139,0.5)",
-                            color: "white",
-                          }}
-                        >
-                          {EVENT_TYPE_CONFIG[type_]?.label ?? type_} x{count}
-                        </span>
-                      )}
-                    </For>
-                  </div>
-                </div>
-              )}
-            </Show>
-
-            <Show when={hoveredEventIdx() !== null && hoveredSceneIdx() === null}>
+            <Show when={hoveredEventIdx() !== null}>
               {(_) => {
                 const evt = () => visibleEvents()[hoveredEventIdx()!];
                 return (
@@ -571,12 +441,8 @@ export default function Timeline(props: Props) {
             <span class="inline-block w-3 h-2 rounded-sm" style={{ background: "rgba(168,85,247,0.6)" }} />
             ズーム区間
           </span>
-          <span class="flex items-center gap-1">
-            <span class="inline-block w-3 h-2 rounded-sm" style={{ background: "rgba(139,92,246,0.4)" }} />
-            シーン
-          </span>
           <span class="text-slate-600">|</span>
-          <span class="text-slate-600">{props.segments.length} 区間 / {scenes().length} シーン / {events().length} イベント</span>
+          <span class="text-slate-600">{props.segments.length} 区間 / {events().length} イベント</span>
         </div>
       </Show>
     </div>
