@@ -4,6 +4,7 @@ pub mod config;
 pub mod engine;
 pub mod eval;
 pub mod export;
+pub mod project;
 pub mod recording;
 pub mod recording_data;
 pub mod shortcuts;
@@ -43,9 +44,11 @@ pub fn run() {
             commands::delete_recording,
             commands::get_recording_thumbnail,
             commands::list_windows,
-            commands::get_auto_segments,
             commands::get_camera_track,
             commands::get_recording_events,
+            commands::load_project,
+            commands::save_project,
+            commands::get_preview_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,7 +2,9 @@ use crate::config::{
     AppSettings, ExportFormat, ExportProgress, QualityPreset, RecordingInfo, RecordingState,
     WindowInfo,
 };
-use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment};
+use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment, ZoomStrength};
+use crate::export::preview::PreviewData;
+use crate::project::Project;
 use crate::recording_data::RecordingData;
 use std::sync::{Arc, Mutex};
 
@@ -167,13 +169,12 @@ pub fn get_recordings_list() -> Result<Vec<RecordingInfo>, String> {
     crate::recording::session::list_recordings().map_err(|e| e.to_string())
 }
 
-/// 録画を書き出す。`segments` が None なら設定のズーム強さでズーム区間を自動生成する。
+/// 録画を書き出す。ズーム区間とトリムは project.json（プレビューの編集内容）を使う。
 #[tauri::command]
 pub async fn export_recording(
     recording_id: String,
     format: ExportFormat,
     quality: QualityPreset,
-    segments: Option<Vec<ZoomSegment>>,
     state: State<'_, AppState>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
@@ -223,7 +224,6 @@ pub async fn export_recording(
                 &format,
                 &quality,
                 &settings,
-                segments,
                 Some(&progress_cb),
             )
         }).await;
@@ -282,17 +282,6 @@ pub fn get_recording_thumbnail(recording_id: String) -> Result<String, String> {
     crate::export::encoder::generate_thumbnail(&recording_id).map_err(|e| e.to_string())
 }
 
-/// 設定のズーム強さで、録画のズーム区間を自動生成する。
-#[tauri::command]
-pub fn get_auto_segments(
-    recording_id: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<ZoomSegment>, String> {
-    let config = camera_config(&state)?;
-    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
-    Ok(camera::auto_segments(&data, &config))
-}
-
 /// ズーム区間からプレビュー用のカメラトラック（30fps）を求める。
 #[tauri::command]
 pub fn get_camera_track(
@@ -300,14 +289,59 @@ pub fn get_camera_track(
     segments: Vec<ZoomSegment>,
     state: State<'_, AppState>,
 ) -> Result<CameraTrack, String> {
-    let config = camera_config(&state)?;
     let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    let config = camera_config(&state, &data)?;
     Ok(camera::camera_track(&data, &segments, &config, PREVIEW_FPS))
 }
 
-fn camera_config(state: &State<'_, AppState>) -> Result<CameraConfig, String> {
+/// 録画のカメラ設定。ズーム強さは project.json の指定、無ければ設定の値。
+fn camera_config(state: &State<'_, AppState>, data: &RecordingData) -> Result<CameraConfig, String> {
+    let strength = zoom_strength_setting(state)?;
+    let project = Project::load(&data.dir).map_err(|e| e.to_string())?;
+    Ok(match project {
+        Some(project) => project.camera_config(strength),
+        None => CameraConfig::from_strength(strength),
+    })
+}
+
+fn zoom_strength_setting(state: &State<'_, AppState>) -> Result<ZoomStrength, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    Ok(CameraConfig::from_strength(settings.effects.zoom_strength))
+    Ok(settings.effects.zoom_strength)
+}
+
+/// 録画の編集内容（project.json）を読む。無ければ自動生成した区間で作って保存する。
+#[tauri::command]
+pub fn load_project(recording_id: String, state: State<'_, AppState>) -> Result<Project, String> {
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    if let Some(project) = Project::load(&data.dir).map_err(|e| e.to_string())? {
+        return Ok(project);
+    }
+    let project = Project::auto(&data, zoom_strength_setting(&state)?);
+    project.save(&data.dir).map_err(|e| e.to_string())?;
+    log::info!("Created {} for recording {}", crate::project::PROJECT_FILE, recording_id);
+    Ok(project)
+}
+
+/// 録画の編集内容を project.json に保存する。
+#[tauri::command]
+pub fn save_project(recording_id: String, project: Project) -> Result<(), String> {
+    let dir = crate::recording_data::recording_dir(&recording_id);
+    if !dir.join("meta.json").exists() {
+        return Err(format!("Recording not found: {}", recording_id));
+    }
+    project.save(&dir).map_err(|e| e.to_string())
+}
+
+/// プレビューの合成に使うデータ（書き出しを `quality` で行うときと同じ見た目）。
+#[tauri::command]
+pub fn get_preview_data(
+    recording_id: String,
+    quality: QualityPreset,
+    state: State<'_, AppState>,
+) -> Result<PreviewData, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    crate::export::preview::preview_data(&data, &settings, &quality).map_err(|e| e.to_string())
 }
 
 /// Get recording events for Timeline UI visualization.

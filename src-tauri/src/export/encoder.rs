@@ -1,10 +1,12 @@
-use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment};
+use crate::camera::{self, CameraTrack};
 use crate::config::defaults::OutputStyle;
 use crate::config::{AppSettings, ExportFormat, QualityPreset, RecordingEvent};
 use crate::engine::compositor::{ClickEffect, Compositor, CursorKind, KeyOverlay};
 use crate::engine::cursor_smoother::CursorSmoother;
 use crate::export::presets::EncodingParams;
+use crate::project::{Project, Trim};
 use crate::recording_data::RecordingData;
+use std::ops::Range;
 use anyhow::Result;
 use chrono::DateTime;
 use std::path::{Path, PathBuf};
@@ -60,45 +62,59 @@ fn unique_output_path(output_dir: &Path, start_time: &str, format: &ExportFormat
         .expect("unbounded range always yields a free name")
 }
 
-/// 録画を書き出す。`segments` が None なら、設定のズーム強さでズーム区間を自動生成する。
+/// 録画を書き出す。ズーム区間とトリムは録画の `project.json`（プレビューの編集内容）を使い、
+/// 無ければ設定のズーム強さで区間を自動生成して録画全体を書き出す。
 pub fn export(
     recording_id: &str,
     format: &ExportFormat,
     quality: &QualityPreset,
     settings: &AppSettings,
-    segments: Option<Vec<ZoomSegment>>,
     progress: Option<&ProgressFn>,
 ) -> Result<String> {
     let data = RecordingData::load_by_id(recording_id)?;
 
     log::info!("Starting effects composition for recording {}", recording_id);
     if let Some(cb) = progress { cb("analyzing", 0.0); }
-    let config = CameraConfig::from_strength(settings.effects.zoom_strength);
-    let segments = segments.unwrap_or_else(|| camera::auto_segments(&data, &config));
-    log::info!("{} zoom segments", segments.len());
-    for seg in &segments {
+    let strength = settings.effects.zoom_strength;
+    let project = match Project::load(&data.dir)? {
+        Some(project) => project,
+        None => {
+            log::info!("project.json が無いため自動生成した区間で書き出す");
+            Project::auto(&data, strength)
+        }
+    };
+    let config = project.camera_config(strength);
+    let trim = project.trim.clamped(data.meta.duration_ms);
+    log::info!("{} zoom segments, trim {}ms-{}ms", project.segments.len(), trim.start_ms, trim.end_ms);
+    for seg in &project.segments {
         log::info!("  {}: {}ms-{}ms zoom={:?} focus={:?}", seg.id, seg.start_ms, seg.end_ms, seg.zoom, seg.focus);
     }
 
     let params = EncodingParams::from_preset(quality, data.width(), data.height());
     let style = OutputStyle::from_settings(&params, settings);
-    let track = camera::camera_track(&data, &segments, &config, params.fps);
+    // カメラは録画全体でシミュレーションしてからトリムの範囲を切り出す（トリムで動きが変わらないように）
+    let track = camera::camera_track(&data, &project.segments, &config, params.fps);
+    let frames = trimmed_frame_range(&track, trim);
+    if frames.is_empty() {
+        return Err(anyhow::anyhow!("書き出す範囲にフレームがありません"));
+    }
+    let audio_offset_ms = track.time_ms(frames.start);
 
     let output_dir = PathBuf::from(&settings.output.save_directory);
     std::fs::create_dir_all(&output_dir)?;
     let output_path = unique_output_path(&output_dir, &data.meta.start_time, format);
 
     if let Some(cb) = progress { cb("composing", 0.0); }
-    let temp_dir = compose_frames(&data, settings, style, &track, progress)?;
+    let temp_dir = compose_frames(&data, settings, style, &track, frames, progress)?;
     let composed_frames_dir = temp_dir.path().join("frames");
     log::info!("Effects composition complete ({} fps), encoding...", params.fps);
 
     if let Some(cb) = progress { cb("encoding", 0.8); }
     let ffmpeg = find_ffmpeg()?;
     match format {
-        ExportFormat::Mp4 => encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir)?,
+        ExportFormat::Mp4 => encode_mp4(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir, audio_offset_ms)?,
         ExportFormat::Gif => encode_gif(&ffmpeg, &composed_frames_dir, &output_path, &params)?,
-        ExportFormat::WebM => encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir)?,
+        ExportFormat::WebM => encode_webm(&ffmpeg, &composed_frames_dir, &output_path, &params, &data.dir, audio_offset_ms)?,
     }
     // temp_dir dropped here → composed frames cleaned up automatically
 
@@ -176,43 +192,77 @@ pub fn get_recording_events(recording_id: &str) -> Result<Vec<crate::config::Tim
 
 // --- Effects composition pipeline ---
 
+/// 合成でフレームに重ねるもの（カーソル・クリック・キー表示）の時系列。
+/// 書き出しとプレビュー（`export::preview`）が同じものを使う。
+pub struct EffectTimeline {
+    /// カーソル位置 `(t, x, y)`。設定によりスムージング済み
+    pub cursor_positions: Vec<(u64, f64, f64)>,
+    /// カーソル形状の変化 `(t, 種類)`
+    pub cursor_shapes: Vec<(u64, CursorKind)>,
+    pub click_effects: Vec<ClickEffect>,
+    pub key_overlays: Vec<KeyOverlay>,
+}
+
+impl EffectTimeline {
+    pub fn new(data: &RecordingData, settings: &AppSettings, style: &OutputStyle) -> Self {
+        let events = &data.events;
+
+        // カーソル位置（座標は RecordingData でキャプチャ領域基準に変換済み）
+        let raw_positions = extract_mouse_positions(events);
+        let cursor_positions = if settings.effects.cursor_smoothing && !raw_positions.is_empty() {
+            CursorSmoother::new().smooth(&raw_positions)
+        } else {
+            raw_positions
+        };
+
+        let click_effects = if settings.effects.click_ring_enabled {
+            extract_click_effects(events, style.click_ring_duration_ms)
+        } else {
+            Vec::new()
+        };
+        let key_overlays = if settings.effects.key_badge_enabled {
+            extract_key_overlays(events, style.key_badge_duration_ms)
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            cursor_positions,
+            cursor_shapes: extract_cursor_shapes(events),
+            click_effects,
+            key_overlays,
+        }
+    }
+}
+
+/// トラックのうち、時刻がトリムの範囲 `[start_ms, end_ms)` に入るフレームの番号の範囲
+fn trimmed_frame_range(track: &CameraTrack, trim: Trim) -> Range<usize> {
+    let n = track.frames.len();
+    let start = (0..n).find(|&k| track.time_ms(k) >= trim.start_ms).unwrap_or(n);
+    let end = (start..n).find(|&k| track.time_ms(k) >= trim.end_ms).unwrap_or(n);
+    start..end
+}
+
 /// エフェクトを合成した出力フレームを一時ディレクトリに書き出す。
 ///
 /// 出力はカメラトラックの fps で等間隔に作る。出力フレーム k（時刻 t）には「t 以前で最も新しい
 /// 元フレーム」を使い、カーソル・クリック・キー表示も時刻 t で評価し、カメラはトラックの k 番目を使う。
 /// これにより実キャプチャが可変フレームレートでも、映像とイベントの時刻が揃う。
+/// 書き出すのはトラックのうち `frames` の範囲（トリム）だけ。
 fn compose_frames(
     data: &RecordingData,
     settings: &AppSettings,
     style: OutputStyle,
     track: &CameraTrack,
+    frames: Range<usize>,
     progress: Option<&ProgressFn>,
 ) -> Result<tempfile::TempDir> {
     if data.frame_count() == 0 {
         return Err(anyhow::anyhow!("No frames found in recording"));
     }
 
-    let events = &data.events;
-
-    // カーソル位置（座標は RecordingData でキャプチャ領域基準に変換済み）
-    let raw_positions = extract_mouse_positions(events);
-    let cursor_positions = if settings.effects.cursor_smoothing && !raw_positions.is_empty() {
-        CursorSmoother::new().smooth(&raw_positions)
-    } else {
-        raw_positions
-    };
-    let cursor_shapes = extract_cursor_shapes(events);
-
-    let click_effects = if settings.effects.click_ring_enabled {
-        extract_click_effects(events, style.click_ring_duration_ms)
-    } else {
-        Vec::new()
-    };
-    let key_overlays = if settings.effects.key_badge_enabled {
-        extract_key_overlays(events, style.key_badge_duration_ms)
-    } else {
-        Vec::new()
-    };
+    let EffectTimeline { cursor_positions, cursor_shapes, click_effects, key_overlays } =
+        EffectTimeline::new(data, settings, &style);
 
     let mut compositor = Compositor::new(style, data.width(), data.height());
     compositor.set_motion_blur(settings.effects.motion_blur_enabled);
@@ -221,7 +271,7 @@ fn compose_frames(
     let composed_frames_dir = temp_dir.path().join("frames");
     std::fs::create_dir_all(&composed_frames_dir)?;
 
-    let total = track.frames.len();
+    let total = frames.len();
     log::info!(
         "Composing {} output frames at {} fps from {} captured frames",
         total,
@@ -233,7 +283,8 @@ fn compose_frames(
     // 同じ元フレームが連続して使われることが多いため、直前に読んだフレームを使い回す
     let mut current: Option<(u64, image::RgbaImage)> = None;
 
-    for (k, &camera) in track.frames.iter().enumerate() {
+    for (i, k) in frames.enumerate() {
+        let camera = track.frames[k];
         let time_ms = track.time_ms(k);
         let frame_idx = data.frame_index_at(time_ms);
         if current.as_ref().map(|(idx, _)| *idx) != Some(frame_idx) {
@@ -268,10 +319,10 @@ fn compose_frames(
         save_rgb_as_jpeg(&rgb_frame, &output_path, INTERMEDIATE_JPEG_QUALITY)?;
         output_frame_count += 1;
 
-        if k % 10 == 0 {
-            log::info!("Composing frame {}/{}", k, total);
+        if i % 10 == 0 {
+            log::info!("Composing frame {}/{}", i, total);
             if let Some(cb) = progress {
-                cb("composing", (k as f64 / total as f64) * 0.8);
+                cb("composing", (i as f64 / total as f64) * 0.8);
             }
         }
     }
@@ -501,12 +552,29 @@ fn find_ffmpeg_in_dir(dir: &std::path::Path) -> Option<String> {
 
 // --- FFmpeg encoding (uses composed frames, no additional scaling) ---
 
+/// 録画の音声を入力に加える。トリムに合わせて `offset_ms` から読む（`-ss` は入力オプション
+/// なので `-i` の前に置く）。音声が無い・空なら何もせず false を返す。
+fn add_audio_input(cmd: &mut Command, recording_dir: &Path, offset_ms: u64) -> bool {
+    let audio_path = recording_dir.join("audio.wav");
+    let has_audio = std::fs::metadata(&audio_path)
+        .map(|m| m.len() > 44)
+        .unwrap_or(false);
+    if has_audio {
+        if offset_ms > 0 {
+            cmd.arg("-ss").arg(format!("{:.3}", offset_ms as f64 / 1000.0));
+        }
+        cmd.arg("-i").arg(audio_path.to_string_lossy().to_string());
+    }
+    has_audio
+}
+
 fn encode_mp4(
     ffmpeg: &str,
     frames_dir: &std::path::Path,
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
+    audio_offset_ms: u64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
@@ -521,16 +589,7 @@ fn encode_mp4(
                 .to_string(),
         );
 
-    // Add audio input if available and non-empty
-    let audio_path = recording_dir.join("audio.wav");
-    let has_audio = audio_path.exists()
-        && std::fs::metadata(&audio_path)
-            .map(|m| m.len() > 44)
-            .unwrap_or(false);
-    if has_audio {
-        cmd.args(["-i"])
-            .arg(audio_path.to_string_lossy().to_string());
-    }
+    let has_audio = add_audio_input(&mut cmd, recording_dir, audio_offset_ms);
 
     // Output options (composed frames are already at final canvas resolution)
     cmd.args(["-c:v", "libx264"])
@@ -615,6 +674,7 @@ fn encode_webm(
     output: &std::path::Path,
     params: &EncodingParams,
     recording_dir: &std::path::Path,
+    audio_offset_ms: u64,
 ) -> Result<()> {
     let mut cmd = Command::new(ffmpeg);
 
@@ -629,16 +689,7 @@ fn encode_webm(
                 .to_string(),
         );
 
-    // Add audio input if available and non-empty
-    let audio_path = recording_dir.join("audio.wav");
-    let has_audio = audio_path.exists()
-        && std::fs::metadata(&audio_path)
-            .map(|m| m.len() > 44)
-            .unwrap_or(false);
-    if has_audio {
-        cmd.args(["-i"])
-            .arg(audio_path.to_string_lossy().to_string());
-    }
+    let has_audio = add_audio_input(&mut cmd, recording_dir, audio_offset_ms);
 
     // Output options
     cmd.args(["-c:v", "libvpx-vp9"])
@@ -687,6 +738,18 @@ mod tests {
         // 形式が違えば別名にしない
         let gif = unique_output_path(tmp.path(), start, &ExportFormat::Gif);
         assert_eq!(gif.file_name().unwrap(), "20261013_090807.gif");
+    }
+
+    #[test]
+    fn test_trimmed_frame_range() {
+        let track = CameraTrack {
+            fps: 10,
+            frames: vec![crate::camera::CameraState::overview(10.0, 10.0); 20], // 0, 100, ..., 1900ms
+        };
+        assert_eq!(trimmed_frame_range(&track, Trim { start_ms: 0, end_ms: 2000 }), 0..20);
+        assert_eq!(trimmed_frame_range(&track, Trim { start_ms: 250, end_ms: 1000 }), 3..10);
+        assert_eq!(trimmed_frame_range(&track, Trim { start_ms: 300, end_ms: 301 }), 3..4);
+        assert!(trimmed_frame_range(&track, Trim { start_ms: 1950, end_ms: 2000 }).is_empty());
     }
 
     #[test]
