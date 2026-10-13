@@ -35,6 +35,8 @@ pub const ZOOM_OUT_MS: u64 = 700;
 pub const PAN_HALF_LIFE_MS: u64 = 200;
 /// F2/F5: パンの速度上限（画面幅/秒）。M5 の基準より余裕を持たせる
 pub const MAX_PAN_SPEED: f64 = 2.5;
+/// F2: デッドゾーンの判定に使う注目点の先読み時間 (ms)。バネの遅れを補う
+pub const PAN_LOOKAHEAD_MS: u64 = 300;
 
 /// F2: デッドゾーンの大きさ（ビューポートの幅・高さに対する比率。中央 60%）
 pub const DEAD_ZONE_RATIO: f64 = 0.6;

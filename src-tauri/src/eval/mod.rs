@@ -4,8 +4,7 @@ pub mod debug_video;
 pub mod expect;
 pub mod metrics;
 
-use crate::camera::CameraTrack;
-use crate::config::AppSettings;
+use crate::camera::{self, CameraConfig, CameraTrack};
 use crate::recording_data::RecordingData;
 use expect::{CheckResult, Expectation};
 use metrics::{Criteria, MetricResult, Metrics};
@@ -14,10 +13,10 @@ use std::path::Path;
 /// 評価に使う出力 fps（Social プリセットと同じ）
 pub const EVAL_FPS: u32 = 30;
 
-/// 評価対象のカメラエンジンでカメラトラックを求める。
-/// 新エンジン (#29) ができたらここを差し替える。
+/// 既定設定（ズーム強さ「標準」）のカメラエンジンでカメラトラックを求める。
 pub fn compute_track(data: &RecordingData, fps: u32) -> CameraTrack {
-    crate::export::encoder::legacy_camera_track(data, &AppSettings::default(), fps)
+    let config = CameraConfig::default();
+    camera::camera_track(data, &camera::auto_segments(data, &config), &config, fps)
 }
 
 /// 1つの録画の評価結果

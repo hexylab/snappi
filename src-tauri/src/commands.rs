@@ -2,7 +2,12 @@ use crate::config::{
     AppSettings, ExportFormat, ExportProgress, QualityPreset, RecordingInfo, RecordingState,
     WindowInfo,
 };
+use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment};
+use crate::recording_data::RecordingData;
 use std::sync::{Arc, Mutex};
+
+/// プレビュー用カメラトラックの fps
+const PREVIEW_FPS: u32 = 30;
 use tauri::{AppHandle, Emitter, State};
 
 pub struct AppState {
@@ -162,11 +167,13 @@ pub fn get_recordings_list() -> Result<Vec<RecordingInfo>, String> {
     crate::recording::session::list_recordings().map_err(|e| e.to_string())
 }
 
+/// 録画を書き出す。`segments` が None なら設定のズーム強さでズーム区間を自動生成する。
 #[tauri::command]
 pub async fn export_recording(
     recording_id: String,
     format: ExportFormat,
     quality: QualityPreset,
+    segments: Option<Vec<ZoomSegment>>,
     state: State<'_, AppState>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
@@ -216,6 +223,7 @@ pub async fn export_recording(
                 &format,
                 &quality,
                 &settings,
+                segments,
                 Some(&progress_cb),
             )
         }).await;
@@ -274,26 +282,32 @@ pub fn get_recording_thumbnail(recording_id: String) -> Result<String, String> {
     crate::export::encoder::generate_thumbnail(&recording_id).map_err(|e| e.to_string())
 }
 
-/// Get zoom keyframes for a recording (for Timeline UI).
+/// 設定のズーム強さで、録画のズーム区間を自動生成する。
 #[tauri::command]
-pub fn get_zoom_keyframes(
+pub fn get_auto_segments(
     recording_id: String,
     state: State<'_, AppState>,
-) -> Result<Vec<crate::engine::zoom_planner::ZoomKeyframe>, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    crate::export::encoder::generate_keyframes_for_recording(&recording_id, &settings)
-        .map_err(|e| e.to_string())
+) -> Result<Vec<ZoomSegment>, String> {
+    let config = camera_config(&state)?;
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    Ok(camera::auto_segments(&data, &config))
 }
 
-/// Get scene debug info for a recording (for Timeline UI visualization).
+/// ズーム区間からプレビュー用のカメラトラック（30fps）を求める。
 #[tauri::command]
-pub fn get_recording_scenes(
+pub fn get_camera_track(
     recording_id: String,
+    segments: Vec<ZoomSegment>,
     state: State<'_, AppState>,
-) -> Result<Vec<crate::engine::scene_splitter::Scene>, String> {
+) -> Result<CameraTrack, String> {
+    let config = camera_config(&state)?;
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    Ok(camera::camera_track(&data, &segments, &config, PREVIEW_FPS))
+}
+
+fn camera_config(state: &State<'_, AppState>) -> Result<CameraConfig, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    crate::export::encoder::get_recording_scenes(&recording_id, &settings)
-        .map_err(|e| e.to_string())
+    Ok(CameraConfig::from_strength(settings.effects.zoom_strength))
 }
 
 /// Get recording events for Timeline UI visualization.
@@ -303,124 +317,6 @@ pub fn get_recording_events(
 ) -> Result<Vec<crate::config::TimelineEvent>, String> {
     crate::export::encoder::get_recording_events(&recording_id)
         .map_err(|e| e.to_string())
-}
-
-/// Apply scene edits (merge/split) and get updated scenes + keyframes.
-#[tauri::command]
-pub fn apply_scene_edits(
-    recording_id: String,
-    edits: Vec<crate::engine::scene_splitter::SceneEditOp>,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let (scenes, keyframes) =
-        crate::export::encoder::apply_scene_edits_for_recording(&recording_id, edits, &settings)
-            .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({
-        "scenes": scenes,
-        "keyframes": keyframes,
-    }))
-}
-
-/// Compute activity center and zoom for a time range.
-/// Used by frontend when merging/adding zoom segments.
-#[tauri::command]
-pub fn compute_activity_center(
-    recording_id: String,
-    start_ms: u64,
-    end_ms: u64,
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let (cx, cy, zoom) =
-        crate::export::encoder::compute_activity_center_for_recording(
-            &recording_id, start_ms, end_ms, &settings,
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({
-        "center_x": cx,
-        "center_y": cy,
-        "zoom_level": zoom,
-    }))
-}
-
-/// Export with custom keyframes from timeline UI.
-#[tauri::command]
-pub async fn export_with_keyframes(
-    recording_id: String,
-    keyframes: Vec<crate::engine::zoom_planner::ZoomKeyframe>,
-    format: ExportFormat,
-    quality: QualityPreset,
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let settings = {
-        let prog = state.export_progress.lock().map_err(|e| e.to_string())?;
-        if prog.is_some() {
-            return Err("Export already in progress".to_string());
-        }
-        state.settings.lock().map_err(|e| e.to_string())?.clone()
-    };
-    {
-        let mut prog = state.export_progress.lock().map_err(|e| e.to_string())?;
-        *prog = Some(ExportProgress {
-            stage: "starting".to_string(),
-            progress: 0.0,
-            output_path: None,
-        });
-    }
-    let export_progress = state.export_progress.clone();
-    let handle = app_handle;
-
-    tokio::spawn(async move {
-        let ep = Arc::clone(&export_progress);
-        let h = handle.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            let progress_cb: crate::export::encoder::ProgressFn = {
-                let handle = h.clone();
-                let export_progress = Arc::clone(&ep);
-                Box::new(move |stage: &str, p: f64| {
-                    let prog = ExportProgress {
-                        stage: stage.to_string(),
-                        progress: p,
-                        output_path: None,
-                    };
-                    if let Ok(mut lock) = export_progress.lock() {
-                        *lock = Some(prog.clone());
-                    }
-                    let _ = handle.emit("export-progress", prog);
-                })
-            };
-
-            crate::export::encoder::export_with_custom_keyframes(
-                &recording_id,
-                keyframes,
-                &format,
-                &quality,
-                &settings,
-                Some(&progress_cb),
-            )
-        }).await;
-
-        if let Ok(mut lock) = export_progress.lock() {
-            *lock = None;
-        }
-        match result {
-            Ok(Ok(path)) => {
-                let _ = handle.emit("export-complete", serde_json::json!({ "output_path": path }));
-            }
-            Ok(Err(e)) => {
-                let _ = handle.emit("export-error", serde_json::json!({ "message": e.to_string() }));
-            }
-            Err(e) => {
-                let _ = handle.emit("export-error", serde_json::json!({ "message": e.to_string() }));
-            }
-        }
-    });
-
-    log::info!("export_with_keyframes command returned immediately (background task spawned)");
-    Ok(())
 }
 
 /// List visible windows for window recording mode selection.
@@ -504,14 +400,40 @@ mod tests {
 
     #[test]
     fn test_settings_serialization_roundtrip() {
-        let settings = AppSettings::default();
+        let mut settings = AppSettings::default();
+        settings.effects.zoom_strength = crate::config::ZoomStrength::Strong;
         let json = serde_json::to_string_pretty(&settings).expect("serialize");
         let deserialized: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        // Verify key fields survive roundtrip
         assert_eq!(deserialized.recording.fps, settings.recording.fps);
-        assert_eq!(deserialized.effects.auto_zoom_enabled, settings.effects.auto_zoom_enabled);
-        assert!((deserialized.effects.max_zoom - settings.effects.max_zoom).abs() < 0.01);
-        assert!((deserialized.effects.text_input_zoom_level - settings.effects.text_input_zoom_level).abs() < 0.01);
+        assert_eq!(deserialized.effects.zoom_strength, crate::config::ZoomStrength::Strong);
+        assert_eq!(deserialized.effects.click_ring_enabled, settings.effects.click_ring_enabled);
+    }
+
+    /// 旧バージョンの settings.json（ズーム関連の旧項目あり）も読み込めること
+    #[test]
+    fn test_legacy_settings_are_migrated() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        let effects = serde_json::json!({
+            "auto_zoom_enabled": false,
+            "default_zoom_level": 2.0,
+            "max_zoom": 2.0,
+            "zoom_intensity": "Balanced",
+            "animation_speed": "Mellow",
+            "frame_diff_enabled": true,
+            "click_ring_enabled": false,
+            "key_badge_enabled": true,
+            "cursor_smoothing": true,
+        });
+        value["effects"] = effects.clone();
+        let loaded: AppSettings = serde_json::from_value(value.clone()).expect("deserialize legacy");
+        assert_eq!(loaded.effects.zoom_strength, crate::config::ZoomStrength::Off);
+        assert!(!loaded.effects.click_ring_enabled);
+        assert!(!loaded.effects.motion_blur_enabled);
+
+        // auto_zoom_enabled: true（既定）は既定のズーム強さになる
+        value["effects"]["auto_zoom_enabled"] = serde_json::json!(true);
+        let loaded: AppSettings = serde_json::from_value(value).expect("deserialize legacy");
+        assert_eq!(loaded.effects.zoom_strength, crate::config::ZoomStrength::Standard);
     }
 
     #[test]
@@ -520,7 +442,7 @@ mod tests {
         let path = temp_dir.path().join("settings.json");
 
         let mut settings = AppSettings::default();
-        settings.effects.max_zoom = 4.0;
+        settings.effects.zoom_strength = crate::config::ZoomStrength::Subtle;
         settings.recording.fps = 24;
 
         // Write
@@ -532,7 +454,7 @@ mod tests {
         let loaded: AppSettings = serde_json::from_str(&content).expect("deserialize");
 
         assert_eq!(loaded.recording.fps, 24);
-        assert!((loaded.effects.max_zoom - 4.0).abs() < 0.01);
+        assert_eq!(loaded.effects.zoom_strength, crate::config::ZoomStrength::Subtle);
     }
 
     #[test]

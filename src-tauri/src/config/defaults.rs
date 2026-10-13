@@ -45,25 +45,11 @@ impl Default for StyleSettings {
 impl Default for EffectsSettings {
     fn default() -> Self {
         Self {
-            auto_zoom_enabled: true,
-            default_zoom_level: 2.0,
-            text_input_zoom_level: 2.5,
-            max_zoom: 2.0,
-            idle_timeout_ms: 1500,
+            zoom_strength: ZoomStrength::Standard,
             click_ring_enabled: true,
             key_badge_enabled: true,
             cursor_smoothing: true,
-            zoom_intensity: ZoomIntensity::default(),
-            animation_speed: AnimationSpeed::default(),
-            smart_zoom_enabled: true,
             motion_blur_enabled: false,
-            frame_diff_enabled: true,
-            idle_zoom_out_ms: 5000,
-            idle_overview_ms: 8000,
-            min_workarea_dwell_ms: 2000,
-            min_window_dwell_ms: 1500,
-            cluster_lifetime_ms: 5000,
-            cluster_stability_ms: 1000,
         }
     }
 }

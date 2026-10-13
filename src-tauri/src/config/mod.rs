@@ -1,5 +1,6 @@
 pub mod defaults;
 
+pub use crate::camera::ZoomStrength;
 use serde::{Deserialize, Serialize};
 
 // Issue #11: ts-rs 型自動生成
@@ -95,163 +96,42 @@ pub enum BackgroundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "EffectsSettingsFile")]
 pub struct EffectsSettings {
-    pub auto_zoom_enabled: bool,
-    pub default_zoom_level: f64,
-    pub text_input_zoom_level: f64,
-    pub max_zoom: f64,
-    pub idle_timeout_ms: u64,
+    /// 自動ズームの強さ（Off で自動ズームしない）
+    pub zoom_strength: ZoomStrength,
     pub click_ring_enabled: bool,
     pub key_badge_enabled: bool,
     pub cursor_smoothing: bool,
-    #[serde(default)]
-    pub zoom_intensity: ZoomIntensity,
-    #[serde(default)]
-    pub animation_speed: AnimationSpeed,
-    #[serde(default = "default_true")]
-    pub smart_zoom_enabled: bool,
-    #[serde(default)]
     pub motion_blur_enabled: bool,
-    /// 画面差分(frame diff)を考慮してシーンBBoxを拡張するか
-    #[serde(default = "default_true")]
-    pub frame_diff_enabled: bool,
-    /// WorkArea→Window のアイドルしきい値 (ms)
-    #[serde(default = "default_idle_zoom_out_ms")]
-    pub idle_zoom_out_ms: u64,
-    /// Window→Overview のアイドルしきい値 (ms)
-    #[serde(default = "default_idle_overview_ms")]
-    pub idle_overview_ms: u64,
-    /// WorkArea 最小滞在時間 (ms)
-    #[serde(default = "default_min_workarea_dwell_ms")]
-    pub min_workarea_dwell_ms: u64,
-    /// Window 最小滞在時間 (ms)
-    #[serde(default = "default_min_window_dwell_ms")]
-    pub min_window_dwell_ms: u64,
-    /// クラスタの有効期間 (ms)
-    #[serde(default = "default_cluster_lifetime_ms")]
-    pub cluster_lifetime_ms: u64,
-    /// クラスタが安定するまでの時間 (ms)
-    #[serde(default = "default_cluster_stability_ms")]
-    pub cluster_stability_ms: u64,
 }
 
-fn default_true() -> bool { true }
-fn default_idle_zoom_out_ms() -> u64 { 5000 }
-fn default_idle_overview_ms() -> u64 { 8000 }
-fn default_min_workarea_dwell_ms() -> u64 { 2000 }
-fn default_min_window_dwell_ms() -> u64 { 1500 }
-fn default_cluster_lifetime_ms() -> u64 { 5000 }
-fn default_cluster_stability_ms() -> u64 { 1000 }
-
-/// Controls how frequently auto-zoom triggers
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ZoomIntensity {
-    Minimal,   // Only window changes and text input
-    Balanced,  // Importance score >= 0.4 (default)
-    Active,    // Importance score >= 0.25
+/// settings.json の effects の読み込み用。旧バージョンのズーム関連の項目は無視し、
+/// `auto_zoom_enabled: false` だけ `zoom_strength: Off` に移行する。
+#[derive(Deserialize)]
+struct EffectsSettingsFile {
+    zoom_strength: Option<ZoomStrength>,
+    auto_zoom_enabled: Option<bool>,
+    click_ring_enabled: Option<bool>,
+    key_badge_enabled: Option<bool>,
+    cursor_smoothing: Option<bool>,
+    motion_blur_enabled: Option<bool>,
 }
 
-impl Default for ZoomIntensity {
-    fn default() -> Self {
-        ZoomIntensity::Balanced
-    }
-}
-
-impl ZoomIntensity {
-    pub fn importance_threshold(&self) -> f64 {
-        match self {
-            ZoomIntensity::Minimal => 0.6,
-            ZoomIntensity::Balanced => 0.4,
-            ZoomIntensity::Active => 0.25,
-        }
-    }
-
-    pub fn cooldown_ms(&self) -> u64 {
-        match self {
-            ZoomIntensity::Minimal => 3000,
-            ZoomIntensity::Balanced => 1500,
-            ZoomIntensity::Active => 800,
-        }
-    }
-
-    /// v3: クラスタが安定したと判断するまでの時間
-    pub fn cluster_stability_ms(&self) -> u64 {
-        match self {
-            ZoomIntensity::Minimal => 2000,
-            ZoomIntensity::Balanced => 1000,
-            ZoomIntensity::Active => 500,
-        }
-    }
-
-    /// v3: WorkArea→Window へズームアウトするIdleしきい値
-    pub fn idle_medium_ms_v3(&self) -> u64 {
-        match self {
-            ZoomIntensity::Minimal => 6000,
-            ZoomIntensity::Balanced => 5000,
-            ZoomIntensity::Active => 3000,
-        }
-    }
-
-    /// v3: Window→Overview へズームアウトするIdleしきい値
-    pub fn idle_long_ms_v3(&self) -> u64 {
-        match self {
-            ZoomIntensity::Minimal => 10000,
-            ZoomIntensity::Balanced => 8000,
-            ZoomIntensity::Active => 6000,
-        }
-    }
-}
-
-/// Controls animation speed for zoom/pan transitions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AnimationSpeed {
-    Slow,
-    Mellow,  // default
-    Quick,
-    Rapid,
-}
-
-impl Default for AnimationSpeed {
-    fn default() -> Self {
-        AnimationSpeed::Mellow
-    }
-}
-
-impl AnimationSpeed {
-    pub fn zoom_in_half_life(&self) -> f64 {
-        match self {
-            AnimationSpeed::Slow => 0.30,
-            AnimationSpeed::Mellow => 0.18,
-            AnimationSpeed::Quick => 0.12,
-            AnimationSpeed::Rapid => 0.08,
-        }
-    }
-
-    pub fn zoom_out_half_life(&self) -> f64 {
-        match self {
-            AnimationSpeed::Slow => 0.50,
-            AnimationSpeed::Mellow => 0.35,
-            AnimationSpeed::Quick => 0.25,
-            AnimationSpeed::Rapid => 0.18,
-        }
-    }
-
-    pub fn pan_half_life(&self) -> f64 {
-        match self {
-            AnimationSpeed::Slow => 0.30,
-            AnimationSpeed::Mellow => 0.22,
-            AnimationSpeed::Quick => 0.15,
-            AnimationSpeed::Rapid => 0.10,
-        }
-    }
-
-    /// v3: half-lifeに掛けるスケール係数
-    pub fn speed_scale(&self) -> f64 {
-        match self {
-            AnimationSpeed::Slow => 1.5,
-            AnimationSpeed::Mellow => 1.0,
-            AnimationSpeed::Quick => 0.7,
-            AnimationSpeed::Rapid => 0.5,
+impl From<EffectsSettingsFile> for EffectsSettings {
+    fn from(f: EffectsSettingsFile) -> Self {
+        let d = EffectsSettings::default();
+        let zoom_strength = match (f.zoom_strength, f.auto_zoom_enabled) {
+            (Some(z), _) => z,
+            (None, Some(false)) => ZoomStrength::Off,
+            (None, _) => d.zoom_strength,
+        };
+        Self {
+            zoom_strength,
+            click_ring_enabled: f.click_ring_enabled.unwrap_or(d.click_ring_enabled),
+            key_badge_enabled: f.key_badge_enabled.unwrap_or(d.key_badge_enabled),
+            cursor_smoothing: f.cursor_smoothing.unwrap_or(d.cursor_smoothing),
+            motion_blur_enabled: f.motion_blur_enabled.unwrap_or(d.motion_blur_enabled),
         }
     }
 }
@@ -406,6 +286,27 @@ pub enum RecordingEvent {
     /// カーソル形状の変化（"arrow" / "ibeam" / "hand" / "wait" / "size_*" / "other"）
     #[serde(rename = "cursor_shape")]
     CursorShape { t: u64, shape: String },
+}
+
+impl RecordingEvent {
+    /// イベントの録画時刻 (ms)
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            RecordingEvent::MouseMove { t, .. }
+            | RecordingEvent::Click { t, .. }
+            | RecordingEvent::ClickRelease { t, .. }
+            | RecordingEvent::Key { t, .. }
+            | RecordingEvent::Scroll { t, .. }
+            | RecordingEvent::Focus { t, .. }
+            | RecordingEvent::WindowFocus { t, .. }
+            | RecordingEvent::UiFocus { t, .. }
+            | RecordingEvent::UiMenuOpen { t, .. }
+            | RecordingEvent::UiMenuClose { t, .. }
+            | RecordingEvent::UiDialogOpen { t, .. }
+            | RecordingEvent::UiDialogClose { t, .. }
+            | RecordingEvent::CursorShape { t, .. } => *t,
+        }
+    }
 }
 
 /// Recording info for the frontend list

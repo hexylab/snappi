@@ -213,17 +213,13 @@ export default function Settings(props: Props) {
             <section>
               <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">エフェクト</h3>
               <div class="space-y-3 bg-slate-800/50 rounded-xl p-4">
-                <SettingRow label="自動ズーム" desc="マウスやキーボードの操作に応じて、注目箇所を自動的にズームします">
-                  <input type="checkbox" checked={s().effects.auto_zoom_enabled} onChange={(e) => updateField("effects", "auto_zoom_enabled", e.target.checked)} class="rounded" />
-                </SettingRow>
-                <SettingRow label="基本ズーム倍率" desc="クリック操作時の標準的なズーム倍率です (1.0 = 等倍)">
-                  <input type="number" min="1.0" max="5.0" step="0.1" value={s().effects.default_zoom_level} onChange={(e) => updateField("effects", "default_zoom_level", parseFloat(e.target.value) || 2.0)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="テキスト入力ズーム倍率" desc="文字入力時のズーム倍率。入力中の文字が読みやすくなります">
-                  <input type="number" min="1.0" max="5.0" step="0.1" value={s().effects.text_input_zoom_level} onChange={(e) => updateField("effects", "text_input_zoom_level", parseFloat(e.target.value) || 2.5)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="最大ズーム倍率" desc="ズームの上限値。これを超えてズームインすることはありません">
-                  <input type="number" min="1.5" max="5.0" step="0.1" value={s().effects.max_zoom} onChange={(e) => updateField("effects", "max_zoom", parseFloat(e.target.value) || 2.0)} class={numInput()} />
+                <SettingRow label="自動ズームの強さ" desc="操作に合わせて注目箇所へ自動でズームするときの倍率です。オフで自動ズームしません">
+                  <select value={s().effects.zoom_strength} onChange={(e) => updateField("effects", "zoom_strength", e.target.value)} class="bg-slate-700 rounded-lg px-3 py-1 text-sm">
+                    <option value="Off">オフ</option>
+                    <option value="Subtle">控えめ (1.5x)</option>
+                    <option value="Standard">標準 (1.8x)</option>
+                    <option value="Strong">強め (2.2x)</option>
+                  </select>
                 </SettingRow>
                 <SettingRow label="クリックエフェクト" desc="クリック位置にリング状のアニメーションを表示します">
                   <input type="checkbox" checked={s().effects.click_ring_enabled} onChange={(e) => updateField("effects", "click_ring_enabled", e.target.checked)} class="rounded" />
@@ -234,70 +230,8 @@ export default function Settings(props: Props) {
                 <SettingRow label="カーソル補間" desc="マウスカーソルの動きをなめらかに補間します">
                   <input type="checkbox" checked={s().effects.cursor_smoothing} onChange={(e) => updateField("effects", "cursor_smoothing", e.target.checked)} class="rounded" />
                 </SettingRow>
-                <SettingRow label="アニメーション速度" desc="ズーム・パン遷移のアニメーション速度です。ゆっくりほど上品、速いほどキビキビした印象になります">
-                  <select value={s().effects.animation_speed} onChange={(e) => updateField("effects", "animation_speed", e.target.value)} class="bg-slate-700 rounded-lg px-3 py-1 text-sm">
-                    <option value="Slow">ゆっくり</option>
-                    <option value="Mellow">おだやか</option>
-                    <option value="Quick">はやめ</option>
-                    <option value="Rapid">きびきび</option>
-                  </select>
-                </SettingRow>
-                <SettingRow label="スマートズーム" desc="UIの種類（ダイアログ、メニューなど）を認識して、ズームの重要度を自動調整します">
-                  <input type="checkbox" checked={s().effects.smart_zoom_enabled} onChange={(e) => updateField("effects", "smart_zoom_enabled", e.target.checked)} class="rounded" />
-                </SettingRow>
                 <SettingRow label="モーションブラー" desc="ズーム・パン中に動きのブレを加えて映像に臨場感を出します">
                   <input type="checkbox" checked={s().effects.motion_blur_enabled} onChange={(e) => updateField("effects", "motion_blur_enabled", e.target.checked)} class="rounded" />
-                </SettingRow>
-                <SettingRow label="画面差分でズーム調整" desc="画面の変化範囲を検出し、ズーム領域を拡張します。OFFにすると操作座標のみでズーム範囲を決定します">
-                  <input type="checkbox" checked={s().effects.frame_diff_enabled} onChange={(e) => updateField("effects", "frame_diff_enabled", e.target.checked)} class="rounded" />
-                </SettingRow>
-              </div>
-            </section>
-
-            {/* ===== ズームタイミング ===== */}
-            <section>
-              <div class="flex items-center justify-between mb-3">
-                <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">ズームタイミング</h3>
-                <button
-                  onClick={() => {
-                    const current = settings();
-                    if (!current) return;
-                    setSettings({
-                      ...current,
-                      effects: {
-                        ...current.effects,
-                        idle_zoom_out_ms: 5000,
-                        idle_overview_ms: 8000,
-                        min_workarea_dwell_ms: 2000,
-                        min_window_dwell_ms: 1500,
-                        cluster_lifetime_ms: 5000,
-                        cluster_stability_ms: 1000,
-                      },
-                    });
-                  }}
-                  class="text-xs text-purple-400 hover:text-purple-300 transition-colors"
-                >
-                  デフォルトに戻す
-                </button>
-              </div>
-              <div class="space-y-3 bg-slate-800/50 rounded-xl p-4">
-                <SettingRow label="ズームアウト開始 (ms)" desc="操作が途切れてからこの時間経過すると、作業エリアからウィンドウ全体表示にズームアウトします">
-                  <input type="number" min="1000" max="30000" step="500" value={s().effects.idle_zoom_out_ms} onChange={(e) => updateField("effects", "idle_zoom_out_ms", parseInt(e.target.value) || 5000)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="全体表示までの時間 (ms)" desc="さらに長く操作がない場合に、画面全体を映すOverview表示に切り替えるまでの時間です">
-                  <input type="number" min="2000" max="60000" step="1000" value={s().effects.idle_overview_ms} onChange={(e) => updateField("effects", "idle_overview_ms", parseInt(e.target.value) || 8000)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="作業エリア最小滞在 (ms)" desc="ズームイン後、最低この時間は作業エリアに留まります。短すぎるズームイン・アウトの往復を防ぎます">
-                  <input type="number" min="500" max="10000" step="250" value={s().effects.min_workarea_dwell_ms} onChange={(e) => updateField("effects", "min_workarea_dwell_ms", parseInt(e.target.value) || 2000)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="ウィンドウ最小滞在 (ms)" desc="ウィンドウ全体表示に切り替わった後、最低この時間はその状態を維持します">
-                  <input type="number" min="500" max="10000" step="250" value={s().effects.min_window_dwell_ms} onChange={(e) => updateField("effects", "min_window_dwell_ms", parseInt(e.target.value) || 1500)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="クラスタ有効期間 (ms)" desc="操作のまとまり（クラスタ）が自動で閉じるまでの無操作時間。長いほど一続きの操作として扱われやすくなります">
-                  <input type="number" min="1000" max="30000" step="500" value={s().effects.cluster_lifetime_ms} onChange={(e) => updateField("effects", "cluster_lifetime_ms", parseInt(e.target.value) || 5000)} class={numInput()} />
-                </SettingRow>
-                <SettingRow label="クラスタ安定判定 (ms)" desc="操作のまとまりが確定するまでの時間。これを過ぎるとその領域にズームインします">
-                  <input type="number" min="200" max="10000" step="100" value={s().effects.cluster_stability_ms} onChange={(e) => updateField("effects", "cluster_stability_ms", parseInt(e.target.value) || 1000)} class={numInput()} />
                 </SettingRow>
               </div>
             </section>
