@@ -29,6 +29,24 @@ npm run build
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
+### カメラの評価 (Issue #28)
+
+カメラ（ズーム・パン）の仕様は `docs/camera-spec-v5.md`。評価用データは `testdata/recordings/`。
+
+```bash
+cd src-tauri
+# メトリクス M1〜M7 と expect.json の判定を表示
+cargo run --bin snappi-eval -- ../testdata/recordings/vscode-typing --metrics
+# frames がある録画に、ビューポート・カーソル・イベント・区間を描き込んだ動画を出力（ffmpeg が必要。重いので --release 推奨）
+cargo run --release --bin snappi-eval -- <recording_dir> --debug-video out.mp4
+# 全シナリオに仕様を適用（新エンジン #29 完成までは ignore）
+cargo test --test camera_eval -- --ignored --nocapture
+```
+
+- 評価するエンジンは `eval::compute_track` で切り替える（現在は旧エンジン `legacy_camera_track`）。
+- 仕様パラメータは `camera/spec.rs`、メトリクスは `eval/metrics.rs`。値を変えたら仕様書も更新する。
+- `src-tauri/Cargo.toml` に `default-run = "snappi"` があるため、`cargo run` は従来どおりアプリを起動する。
+
 **ビルド時の注意**: Windows環境で `RC.EXE` が見つからないエラーが出た場合、Windows SDK のパスを通す必要がある:
 ```bash
 set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"

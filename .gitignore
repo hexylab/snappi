@@ -33,3 +33,7 @@ src-tauri/ffmpeg/ffmpeg.exe
 
 # Dev screenshots
 current-ui.png
+
+# 評価用録画の frames / 音声はコミットしない (Issue #28)
+testdata/recordings/*/frames/
+testdata/recordings/*/audio.wav

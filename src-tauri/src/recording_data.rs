@@ -175,9 +175,14 @@ fn frame_index_at(frame_times: &[u64], t_ms: u64) -> u64 {
 }
 
 fn output_frame_times(end_ms: u64, fps: u32) -> Vec<u64> {
+    let count = ((end_ms * fps.max(1) as u64 + 500) / 1000).max(1);
+    (0..count).map(|k| output_frame_time(k, fps)).collect()
+}
+
+/// `fps` で等間隔に並べた出力フレーム `k` の時刻 (ms)。
+pub fn output_frame_time(k: u64, fps: u32) -> u64 {
     let fps = fps.max(1) as u64;
-    let count = ((end_ms * fps + 500) / 1000).max(1);
-    (0..count).map(|k| (k * 1000 + fps / 2) / fps).collect()
+    (k * 1000 + fps / 2) / fps
 }
 
 /// 録画モードに応じたキャプチャ領域の左上座標の時系列を求める。

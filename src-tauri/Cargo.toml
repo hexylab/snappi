@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Screen Studio-level screen recorder for Windows"
 authors = ["hexylab"]
 edition = "2021"
+# snappi-eval (Issue #28) を追加したため、cargo run の既定バイナリを明示する
+default-run = "snappi"
 
 [lib]
 name = "snappi_lib"

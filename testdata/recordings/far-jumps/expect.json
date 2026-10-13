@@ -1,0 +1,47 @@
+{
+  "description": "画面の左上と右下を交互にクリックする",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 2696,
+      "x": 150,
+      "y": 120
+    },
+    {
+      "kind": "visible",
+      "t_ms": 4892,
+      "x": 1770,
+      "y": 960
+    },
+    {
+      "kind": "visible",
+      "t_ms": 7088,
+      "x": 150,
+      "y": 120
+    },
+    {
+      "kind": "visible",
+      "t_ms": 9284,
+      "x": 1770,
+      "y": 960
+    },
+    {
+      "kind": "visible",
+      "t_ms": 11480,
+      "x": 150,
+      "y": 120
+    },
+    {
+      "kind": "visible",
+      "t_ms": 13676,
+      "x": 1770,
+      "y": 960
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 17676,
+      "to_ms": 20000
+    }
+  ]
+}

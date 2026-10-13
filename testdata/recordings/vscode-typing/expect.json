@@ -1,0 +1,27 @@
+{
+  "description": "エディタでクリックしてからコードを入力し、保存する",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 2400,
+      "x": 700,
+      "y": 400
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 3000,
+      "to_ms": 9500,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 15000,
+      "to_ms": 18000
+    },
+    {
+      "kind": "max_switches",
+      "max": 2
+    }
+  ]
+}

@@ -1,6 +1,8 @@
+pub mod camera;
 pub mod commands;
 pub mod config;
 pub mod engine;
+pub mod eval;
 pub mod export;
 pub mod recording;
 pub mod recording_data;

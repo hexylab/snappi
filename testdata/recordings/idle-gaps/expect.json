@@ -1,0 +1,32 @@
+{
+  "description": "操作 → 10秒放置 → 操作。放置中は全体表示に戻る",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "zoomed_in",
+      "from_ms": 2500,
+      "to_ms": 6080,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 9580,
+      "to_ms": 14580
+    },
+    {
+      "kind": "zoomed_in",
+      "from_ms": 17276,
+      "to_ms": 20728,
+      "min_ratio": 0.9
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 24728,
+      "to_ms": 28000
+    },
+    {
+      "kind": "max_switches",
+      "max": 4
+    }
+  ]
+}

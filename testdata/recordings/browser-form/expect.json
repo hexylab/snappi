@@ -1,0 +1,27 @@
+{
+  "description": "ブラウザのフォームで複数の入力欄を順にクリックして入力する",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 2000,
+      "x": 800,
+      "y": 300
+    },
+    {
+      "kind": "visible",
+      "t_ms": 14367,
+      "x": 900,
+      "y": 700
+    },
+    {
+      "kind": "max_switches",
+      "max": 2
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 18367,
+      "to_ms": 23000
+    }
+  ]
+}

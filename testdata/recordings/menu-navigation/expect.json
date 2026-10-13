@@ -1,0 +1,21 @@
+{
+  "description": "アプリのメニューとダイアログを操作する",
+  "synthetic": true,
+  "checks": [
+    {
+      "kind": "visible",
+      "t_ms": 1800,
+      "x": 40,
+      "y": 15
+    },
+    {
+      "kind": "max_switches",
+      "max": 2
+    },
+    {
+      "kind": "zoomed_out",
+      "from_ms": 12428,
+      "to_ms": 18000
+    }
+  ]
+}
