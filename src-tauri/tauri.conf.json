@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "snappi",
+  "productName": "Snappi",
   "version": "0.1.0",
   "identifier": "com.hexylab.snappi",
   "build": {
