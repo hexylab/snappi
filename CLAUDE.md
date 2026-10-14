@@ -93,10 +93,19 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
               → Compositor（CameraState のビューポートで切り抜き・カーソル等を合成）→ FFmpeg → MP4/GIF/WebM
 ```
 
-### プレビュー (Issue #30)
+### UI (Issue #1, #30)
 
-- 方針: **自動の結果で完成形に近いこと**を優先し、編集は「区間の削除・端の伸縮・トリム・Undo」だけに絞る。
-- 開くと `load_project`（無ければ自動生成して保存）→ 完成形を自動再生。編集はデバウンスして `save_project`。
+- 見た目は `DESIGN.md`（Hexyl Light）に従う。トークンは `src/styles.css` の `@theme` / `:root` にだけ書き、
+  画面からは `var(--…)` か Tailwind のユーティリティ（`bg-surface` など）で読む。アイコンは絵文字、ライトテーマのみ。
+- 方針: **自動の結果で完成形に近いこと**を優先し、通常は「録画を開始 → 停止 → 書き出す」だけで済むようにする。
+  細かい編集はプレビューの「細かく編集」スイッチ（状態は localStorage）をオンにしたときだけ出す。
+- 録画中はメインウィンドウを小さな録画バーにする（`set_recording_bar`・`window_bar.rs`。
+  `WDA_EXCLUDEFROMCAPTURE` で録画に映らない）。録画の対象（画面全体／ウィンドウ）と音声（PCの音・マイク）はホームで選ぶ。
+- 設定はホームから開くダイアログ（`SettingsDialog.tsx`）。変更はすぐ保存（`lib/settingsStore.ts`）。
+- プレビュー: 開くと `load_project`（無ければ自動生成して保存）→ 完成形を自動再生。編集はデバウンスして `save_project`。
+  - 通常: 再生とシークバー（両端のつまみで前後をカット）、「動画を書き出す」（設定の形式・画質）、書き出し後に「動画を開く」「フォルダを開く」
+  - 細かく編集: タイムライン（ズーム・操作のトラック）、ズームの追加・削除・伸縮、この録画のズームの強さ・自動に戻す
+    （`auto_project`）、Undo/Redo、フレーム送り、形式・画質の選択
 - `src/lib/previewRenderer.ts` が書き出しと同じ合成（背景・影・角丸・カーソル・クリックリング・キー表示）を
   canvas に描く。スタイル・時系列・カーソル画像は `get_preview_data`（`export/preview.rs`）が
   書き出しと同じ計算（`OutputStyle`・`EffectTimeline`・`Compositor` のスプライト）から返す。
@@ -114,7 +123,8 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
 録画中は3スレッドが並行動作。`Arc<AtomicBool>`でpause/stopを制御:
 - **capture**: Windows GDI BitBltで画面キャプチャ → JPEG保存（変換・保存はワーカースレッド。開発ビルドでも 30fps 以上を保つため `[profile.dev]` は opt-level 1）
 - **events**: rdevでグローバルマウス/キーフック → JSONL
-- **audio**: cpal WASAPI loopbackでシステム音声 → WAV
+- **audio**: cpal で PC の音（WASAPI loopback）とマイクを別々の WAV に録り、停止時に `audio.wav` にまとめる（両方なら FFmpeg でミックス）。
+  loopback は PC が無音の間データを送ってこないので、`RecordingClock` に合わせて欠けを無音で埋め、映像とずれないようにする
 
 ### IPC構造
 
@@ -128,7 +138,7 @@ SolidJS (src/lib/commands.ts)
 
 ### フロントエンドのページ管理
 
-ルーターは使わず `createSignal<"list"|"preview"|"settings">` でページ切り替え（`App.tsx`）。
+ルーターは使わず `createSignal<"home"|"preview">` でページ切り替え（`App.tsx`）。録画中は `RecordingBar` だけを出す。設定は `home` 上のダイアログ。
 
 ## 重要な技術的制約
 

@@ -98,8 +98,10 @@ pub fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 録画を止めて仕上げる（スレッドの join・audio.wav・changes.jsonl）。
+/// 時間がかかるので async にして、仕上げ中も UI（録画バー）が固まらないようにする。
 #[tauri::command]
-pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     // Check state and take session while holding locks briefly
     let session = {
         let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
@@ -116,8 +118,10 @@ pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         let recording_id = session.id().to_string();
 
         // stop() sleeps 500ms and writes meta.json - do this without holding locks
-        if let Err(e) = session.stop() {
-            log::error!("Error during session stop: {}", e);
+        match tokio::task::spawn_blocking(move || session.stop()).await {
+            Ok(Err(e)) => log::error!("Error during session stop: {}", e),
+            Err(e) => log::error!("Session stop task failed: {}", e),
+            Ok(Ok(())) => {}
         }
 
         let mut rec_state = state.recording_state.lock().map_err(|e| e.to_string())?;
@@ -283,15 +287,75 @@ pub fn get_recording_thumbnail(recording_id: String) -> Result<String, String> {
 }
 
 /// ズーム区間からプレビュー用のカメラトラック（30fps）を求める。
+/// `zoom_strength` はプレビューで選んでいるこの録画のズーム強さ（None なら project.json・設定の値）。
 #[tauri::command]
 pub fn get_camera_track(
     recording_id: String,
     segments: Vec<ZoomSegment>,
+    zoom_strength: Option<ZoomStrength>,
     state: State<'_, AppState>,
 ) -> Result<CameraTrack, String> {
     let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
-    let config = camera_config(&state, &data)?;
+    let config = match zoom_strength {
+        Some(strength) => CameraConfig::from_strength(strength),
+        None => camera_config(&state, &data)?,
+    };
     Ok(camera::camera_track(&data, &segments, &config, PREVIEW_FPS))
+}
+
+/// 自動のズーム区間とトリムを `zoom_strength` で作る（保存はしない）。
+/// プレビューの「ズームの強さ」「自動に戻す」で使う。
+#[tauri::command]
+pub fn auto_project(recording_id: String, zoom_strength: ZoomStrength) -> Result<Project, String> {
+    let mut data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    data.ensure_changes();
+    let mut project = Project::auto(&data, zoom_strength);
+    project.zoom_strength = Some(zoom_strength);
+    Ok(project)
+}
+
+/// ファイルならエクスプローラーで選択した状態で、フォルダならそのフォルダを開く。
+#[tauri::command]
+pub fn show_in_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let mut cmd = std::process::Command::new("explorer");
+    if p.is_file() {
+        cmd.arg(format!("/select,{}", p.display()));
+    } else if p.is_dir() {
+        cmd.arg(p);
+    } else {
+        return Err(format!("見つかりません: {}", path));
+    }
+    // explorer は成功しても終了コード 1 を返すことがあるので、起動できたかだけを見る
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// ファイルを既定のアプリで開く（書き出した動画の再生）。
+#[tauri::command]
+pub fn open_file(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).is_file() {
+        return Err(format!("見つかりません: {}", path));
+    }
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 録画中はメインウィンドウを小さな録画バーにする（録画には映らない）。false で元に戻す。
+#[tauri::command]
+pub async fn set_recording_bar(
+    enabled: bool,
+    window: tauri::WebviewWindow,
+    bar: State<'_, crate::window_bar::WindowBarState>,
+) -> Result<(), String> {
+    let result = if enabled {
+        crate::window_bar::enter(&window, &bar)
+    } else {
+        crate::window_bar::exit(&window, &bar)
+    };
+    result.map_err(|e| e.to_string())
 }
 
 /// 録画のカメラ設定。ズーム強さは project.json の指定、無ければ設定の値。
@@ -403,6 +467,13 @@ unsafe extern "system" fn enum_window_callback(
 
     let title_str = String::from_utf16_lossy(&title[..len as usize]);
     if title_str.is_empty() {
+        return TRUE;
+    }
+
+    // Snappi 自身のウィンドウは録画対象にしない
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == std::process::id() {
         return TRUE;
     }
 

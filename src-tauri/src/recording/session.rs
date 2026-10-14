@@ -18,6 +18,9 @@ pub struct RecordingSession {
     recording_mode: RecordingMode,
     /// キー入力のラベルを平文で events.jsonl に記録するか（既定: false）。
     record_key_labels: bool,
+    /// PC の音・マイクを録音するか
+    capture_system_audio: bool,
+    capture_microphone: bool,
     /// 各キャプチャスレッドのJoinHandle。stop()時にjoinして取りこぼしを防ぐ
     thread_handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -42,6 +45,8 @@ impl RecordingSession {
             fps: settings.recording.fps,
             recording_mode: settings.recording.recording_mode.clone(),
             record_key_labels: settings.recording.record_key_labels,
+            capture_system_audio: settings.recording.capture_system_audio,
+            capture_microphone: settings.recording.capture_microphone,
             thread_handles: Mutex::new(Vec::new()),
         })
     }
@@ -92,15 +97,22 @@ impl RecordingSession {
             }
         }));
 
-        // Start audio capture thread
-        let running = self.is_running.clone();
-        let paused = self.is_paused.clone();
-        let dir = self.recording_dir.clone();
-        handles.push(std::thread::spawn(move || {
-            if let Err(e) = super::audio::capture_audio(running, paused, &dir) {
-                log::error!("Audio capture error: {}", e);
-            }
-        }));
+        // 音声（PC の音・マイクを別々の WAV に録り、停止時に audio.wav にまとめる）
+        let sources = [
+            (self.capture_system_audio, super::audio::AudioSource::System),
+            (self.capture_microphone, super::audio::AudioSource::Microphone),
+        ];
+        for (_, source) in sources.into_iter().filter(|(enabled, _)| *enabled) {
+            let running = self.is_running.clone();
+            let paused = self.is_paused.clone();
+            let dir = self.recording_dir.clone();
+            let clock = self.clock.clone();
+            handles.push(std::thread::spawn(move || {
+                if let Err(e) = super::audio::capture_audio(source, running, paused, &dir, clock) {
+                    log::error!("Audio capture error ({:?}): {}", source, e);
+                }
+            }));
+        }
 
         // Start window focus tracking thread
         let running = self.is_running.clone();
@@ -187,6 +199,10 @@ impl RecordingSession {
 
         // Read frame count from capture thread output
         let frame_count = self.read_frame_count();
+
+        if let Err(e) = super::audio::finalize_audio(&self.recording_dir) {
+            log::warn!("audio.wav を作れません: {:#}", e);
+        }
 
         // Check if audio was actually captured (file exists and has data beyond WAV header)
         let audio_path = self.recording_dir.join("audio.wav");
