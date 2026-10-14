@@ -1,4 +1,4 @@
-//! カメラの評価・デバッグ用 CLI (Issue #28)。
+//! カメラの評価・デバッグ用 CLI。
 //!
 //! ```text
 //! cargo run --bin snappi-eval -- <recording_dir> [--metrics] [--debug-video <out.mp4>]
@@ -9,7 +9,7 @@
 //! オプションを省略した場合は `--metrics` とみなす。
 //! `--draft-expect` は expect.json の下書きを標準出力に出す（description は既存の expect.json から引き継ぐ）。
 //! `--table` は複数の録画のメトリクスを Markdown の表（仕様書のベースライン表の形式）で出す。
-//! `--changes` は frames から changes.jsonl（画面の変化領域, Issue #39）を作り直す。
+//! `--changes` は frames から changes.jsonl（画面の変化領域）を作り直す。
 //! 録画でないディレクトリ（`testdata/recordings` 等）を渡すと、その直下の録画をすべて対象にする。
 
 use snappi_lib::camera;

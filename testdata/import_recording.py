@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Windows 実機で録画したデータを評価シナリオとして testdata/recordings/ に取り込む (Issue #28)。
+"""Windows 実機で録画したデータを評価シナリオとして testdata/recordings/ に取り込む。
 
     python testdata/import_recording.py <録画ディレクトリ | 録画ID | latest> <シナリオ名>
 
 - 録画ディレクトリから小さいファイル（meta.json / events.jsonl / ui_events.jsonl /
   window_rects.jsonl / frame_timestamps.txt / changes.jsonl）だけをコピーする。frames/ と audio.wav はコピーしない。
-- changes.jsonl（画面の変化領域, Issue #39）が無ければ、コピー前に frames から作る（`snappi-eval --changes`）。
+- changes.jsonl（画面の変化領域）が無ければ、コピー前に frames から作る（`snappi-eval --changes`）。
 - window_events.jsonl（前面ウィンドウの矩形）はウィンドウタイトルを消してコピーする。
 - meta.json の recording_dir（ユーザー名を含むローカルパス）は空にする。
 - `snappi-eval --draft-expect` で expect.json の下書きを作る（description は既存のものを引き継ぐ）。

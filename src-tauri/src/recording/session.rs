@@ -73,9 +73,6 @@ impl RecordingSession {
                 RecordingMode::Window { hwnd, .. } => {
                     super::capture::capture_window(running, paused, &dir, fps, hwnd, clock)
                 }
-                RecordingMode::Area { x, y, width, height } => {
-                    super::capture::capture_area(running, paused, &dir, fps, x, y, width, height, clock)
-                }
                 RecordingMode::Display => {
                     super::capture::capture_screen(running, paused, &dir, fps, clock)
                 }
@@ -214,9 +211,6 @@ impl RecordingSession {
             RecordingMode::Window { title, rect, .. } => {
                 (Some("window".to_string()), Some(title.clone()), Some(*rect))
             }
-            RecordingMode::Area { x, y, width, height } => {
-                (Some("area".to_string()), None, Some([*x as f64, *y as f64, (*x + *width) as f64, (*y + *height) as f64]))
-            }
         };
 
         let meta = RecordingMeta {
@@ -228,26 +222,23 @@ impl RecordingSession {
             start_time: self.started_at.clone(),
             duration_ms,
             has_audio,
-            monitor_scale: 1.0,
             recording_dir: self.recording_dir.to_string_lossy().to_string(),
             recording_mode: mode_str,
             window_title: win_title,
             window_initial_rect: win_rect,
-            frame_count: Some(frame_count),
+            frame_count,
         };
 
         let meta_path = self.recording_dir.join("meta.json");
         let meta_json = serde_json::to_string_pretty(&meta)?;
         std::fs::write(meta_path, meta_json)?;
 
-        // meta.json への統合が完了したので、冗長な中間ファイルを削除する。
-        // 互換性: 読み込み側は meta.frame_count が None のとき frame_count.txt に
-        // フォールバックするため、旧録画は従来通り動作する。
+        // キャプチャのスレッドが書いた中間ファイルは meta.json にまとめたので消す
         let _ = std::fs::remove_file(self.recording_dir.join("dimensions.txt"));
         let _ = std::fs::remove_file(self.recording_dir.join("frame_count.txt"));
 
-        // 画面の変化領域を求めておく（自動ズームの主役の手がかり, Issue #39）。
-        // 失敗しても録画は使える（プレビューを開くときに作り直す）ので警告だけにする
+        // 画面の変化領域を求めておく（自動ズームの主役の手がかり）。
+        // 失敗しても録画は使える（変化領域なしで自動ズームする）ので警告だけにする
         if let Err(e) = crate::changes::generate(&self.recording_dir) {
             log::warn!("changes.jsonl を作れません: {:#}", e);
         }
@@ -310,14 +301,6 @@ pub fn list_recordings() -> Result<Vec<RecordingInfo>> {
             if meta_path.exists() {
                 let content = std::fs::read_to_string(&meta_path)?;
                 if let Ok(meta) = serde_json::from_str::<RecordingMeta>(&content) {
-                    // meta.frame_count を優先。旧録画 (None) は frame_count.txt にフォールバック。
-                    let frame_count = meta.frame_count.unwrap_or_else(|| {
-                        let fc_path = entry.path().join("frame_count.txt");
-                        std::fs::read_to_string(&fc_path)
-                            .ok()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .unwrap_or(0)
-                    });
                     let thumb_path = entry.path().join("thumbnail.png");
                     let thumbnail_path = if thumb_path.exists() {
                         Some(thumb_path.to_string_lossy().to_string())
@@ -329,7 +312,7 @@ pub fn list_recordings() -> Result<Vec<RecordingInfo>> {
                         id: meta.id,
                         date: meta.start_time,
                         duration_ms: meta.duration_ms,
-                        frame_count,
+                        frame_count: meta.frame_count,
                         thumbnail_path,
                         recording_dir: meta.recording_dir,
                         screen_width: meta.screen_width,

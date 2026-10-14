@@ -1,4 +1,6 @@
-import type { ExportFormat, QualityPreset, ZoomStrength } from "./types";
+import type { ExportFormat } from "./generated/ExportFormat";
+import type { QualityPreset } from "./generated/QualityPreset";
+import type { ZoomStrength } from "./generated/ZoomStrength";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 

@@ -3,4 +3,4 @@
 /**
  * Recording info for the frontend list
  */
-export type RecordingInfo = { id: string, date: string, duration_ms: bigint, frame_count: number, thumbnail_path: string | null, recording_dir: string, screen_width: number, screen_height: number, };
+export type RecordingInfo = { id: string, date: string, duration_ms: number, frame_count: number, thumbnail_path: string | null, recording_dir: string, screen_width: number, screen_height: number, };

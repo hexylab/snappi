@@ -3,4 +3,4 @@
 /**
  * Recording mode: full display or specific window
  */
-export type RecordingMode = { "type": "Display" } | { "type": "Window", hwnd: number, title: string, rect: [number, number, number, number], } | { "type": "Area", x: number, y: number, width: number, height: number, };
+export type RecordingMode = { "type": "Display" } | { "type": "Window", hwnd: number, title: string, rect: [number, number, number, number], };

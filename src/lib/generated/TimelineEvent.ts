@@ -3,4 +3,4 @@
 /**
  * Lightweight event representation for Timeline UI visualization.
  */
-export type TimelineEvent = { time_ms: bigint, event_type: string, x: number | null, y: number | null, label: string | null, };
+export type TimelineEvent = { time_ms: number, event_type: string, x: number | null, y: number | null, label: string | null, };

@@ -11,13 +11,9 @@ export type PreviewData = {
  */
 width: number, height: number, duration_ms: number, 
 /**
- * 各フレームの録画時刻 (ms)。frames/frame_{番号:08}.{frame_ext}
+ * 各フレームの録画時刻 (ms)。frames/frame_{番号:08}.jpg
  */
 frame_times: Array<number>, 
-/**
- * フレーム画像の拡張子（新しい録画は "jpg"、旧録画は "png"）
- */
-frame_ext: string, 
 /**
  * audio.wav に音声が入っているか
  */

@@ -1,5 +1,5 @@
-//! カメラトラックの計算 (Issue #29, #39)。ショット（`Fixed` の区間）は仕様 `docs/camera-spec-v6.md` §6 の F6、
-//! `Auto` の区間は `docs/old/camera-spec-v5.md` §5 の F1〜F5 と §5.1 の遷移を、
+//! カメラトラックの計算。ショット（`Fixed` の区間）は仕様 `docs/camera-spec.md` §7 の F6、
+//! `Auto` の区間は F1〜F4 を、
 //! 出力 fps で時刻を進めながら決定的にシミュレーションする。
 
 use super::config::CameraConfig;
@@ -199,7 +199,7 @@ impl FocusSource {
     }
 }
 
-/// ズームの遷移（§5.1, F4）
+/// ズームの遷移（F4, F6）
 #[derive(Debug, Clone, Copy)]
 struct Transition {
     start_t: u64,
@@ -273,13 +273,10 @@ impl Camera {
             if let Some(s) = seg {
                 // 先読みした注目点に向けて早めに動き出し、バネの遅れを補う
                 let t_ahead = (t + spec::PAN_LOOKAHEAD_MS).min(s.end_ms);
-                // 自動追従ではカーソルを、固定位置では注目点を、ビューポートから外さない
-                let (keep_ahead, keep_now) = match s.focus {
-                    FocusMode::Auto => (focus.raw_cursor_at(t_ahead), focus.raw_cursor_at(t)),
-                    FocusMode::Fixed { .. } => (focus_point, focus_point),
-                };
+                // カーソルはビューポートから外さない
+                let keep = [focus.raw_cursor_at(t_ahead), focus.raw_cursor_at(t)];
                 if let Some(ahead) = focus.point(s, t_ahead) {
-                    self.retarget_pan(ahead, &[keep_ahead, keep_now]);
+                    self.retarget_pan(ahead, &keep);
                 }
             }
             self.step_pan(corridor, dt);
@@ -461,12 +458,11 @@ mod tests {
                 start_time: String::new(),
                 duration_ms,
                 has_audio: false,
-                monitor_scale: 1.0,
                 recording_dir: String::new(),
                 recording_mode: None,
                 window_title: None,
                 window_initial_rect: None,
-                frame_count: Some(0),
+                frame_count: 0,
             },
             events,
             frame_times: vec![],

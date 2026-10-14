@@ -1,4 +1,4 @@
-//! 録画データローダー (Issue #27)。
+//! 録画データローダー。
 //!
 //! 録画ディレクトリの meta.json・events.jsonl・ui_events.jsonl・frame_timestamps.txt・
 //! window_rects.jsonl を1か所で読み込み、エクスポートや解析が使う形に正規化する。
@@ -6,13 +6,13 @@
 //! - イベントの座標は**キャプチャ領域基準（フレーム左上が原点）**に一度だけ変換して保持する。
 //!   ウィンドウ録画では各イベント時刻のウィンドウ位置を使うため、録画中にウィンドウを
 //!   動かしても座標がずれない。
-//! - フレーム時刻は frame_timestamps.txt の実測値を使い、無い旧形式の録画では等間隔とみなす。
+//! - フレーム時刻は frame_timestamps.txt の実測値を使う。
 
 use crate::changes::FrameChange;
 use crate::recording::capture::{FRAME_TIMESTAMPS_FILE, WINDOW_RECTS_FILE};
 use crate::recording::focus::WINDOW_EVENTS_FILE;
 use crate::config::{RecordingEvent, RecordingMeta};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -23,32 +23,6 @@ pub fn recording_dir(recording_id: &str) -> PathBuf {
         .join("Snappi")
         .join("recordings")
         .join(recording_id)
-}
-
-/// 録画フレームのパスを解決する。新しい録画は `.jpg`、旧録画は `.png` で保存されている
-/// ため両方をチェックする。ファイルが見つからない場合は `.jpg` のパスを返す（呼び出し側が
-/// エラーを出す想定）。
-pub fn frame_path(frames_dir: &Path, idx: u64) -> PathBuf {
-    let jpg = frames_dir.join(format!("frame_{:08}.jpg", idx));
-    if jpg.exists() {
-        return jpg;
-    }
-    let png = frames_dir.join(format!("frame_{:08}.png", idx));
-    if png.exists() {
-        return png;
-    }
-    jpg
-}
-
-/// 録画フレーム数。meta.json の frame_count を優先し、旧録画は frame_count.txt にフォールバックする。
-pub fn read_frame_count(dir: &Path, meta: &RecordingMeta) -> u64 {
-    if let Some(fc) = meta.frame_count {
-        return fc as u64;
-    }
-    std::fs::read_to_string(dir.join("frame_count.txt"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
 }
 
 /// window_rects.jsonl の1行
@@ -82,14 +56,17 @@ impl RecordingData {
         let meta: RecordingMeta =
             serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json"))?)?;
 
-        let frame_count = read_frame_count(dir, &meta);
-        let frame_times = match read_frame_timestamps(dir) {
-            Some(ts) if ts.len() as u64 >= frame_count => ts[..frame_count as usize].to_vec(),
-            _ => {
-                log::info!("frame_timestamps.txt が無い（または不足）ため等間隔のフレーム時刻を使用");
-                evenly_spaced_frame_times(frame_count, meta.duration_ms)
-            }
-        };
+        let frame_count = meta.frame_count as usize;
+        let mut frame_times = read_frame_timestamps(dir)?;
+        if frame_times.len() < frame_count {
+            anyhow::bail!(
+                "{} の行数 ({}) がフレーム数 ({}) より少ない",
+                FRAME_TIMESTAMPS_FILE,
+                frame_times.len(),
+                frame_count
+            );
+        }
+        frame_times.truncate(frame_count);
 
         let mut events = read_jsonl::<RecordingEvent>(&dir.join("events.jsonl"));
         events.extend(read_jsonl::<RecordingEvent>(&dir.join("ui_events.jsonl")));
@@ -106,19 +83,6 @@ impl RecordingData {
             frame_times,
             changes: crate::changes::load(dir),
         })
-    }
-
-    /// changes.jsonl が無く frames がある録画（旧録画）なら、frames から作って読み込む (Issue #39)。
-    /// 失敗しても録画は使えるので、警告だけ出して変化領域なしで続ける。
-    pub fn ensure_changes(&mut self) {
-        if !self.changes.is_empty() || self.dir.join(crate::changes::CHANGES_FILE).exists() {
-            return;
-        }
-        match crate::changes::ensure(&self.dir) {
-            Ok(true) => self.changes = crate::changes::load(&self.dir),
-            Ok(false) => {}
-            Err(e) => log::warn!("changes.jsonl を作れません {}: {:#}", self.dir.display(), e),
-        }
     }
 
     pub fn width(&self) -> u32 {
@@ -138,7 +102,7 @@ impl RecordingData {
     }
 
     pub fn frame_path(&self, idx: u64) -> PathBuf {
-        frame_path(&self.frames_dir(), idx)
+        self.frames_dir().join(format!("frame_{:08}.jpg", idx))
     }
 
     /// 時刻 `t_ms` 以前で最も新しいフレームの番号。最初のフレームより前なら 0。
@@ -168,24 +132,16 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
         .collect()
 }
 
-/// frame_timestamps.txt を読む。ファイルが無い・壊れている場合は None。
-fn read_frame_timestamps(dir: &Path) -> Option<Vec<u64>> {
-    let content = std::fs::read_to_string(dir.join(FRAME_TIMESTAMPS_FILE)).ok()?;
+/// frame_timestamps.txt を読む。
+fn read_frame_timestamps(dir: &Path) -> Result<Vec<u64>> {
+    let path = dir.join(FRAME_TIMESTAMPS_FILE);
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("{} を読めません", path.display()))?;
     content
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(|l| l.parse::<u64>().ok())
-        .collect()
-}
-
-/// 旧形式の録画用: 録画時間をフレーム数で等分したフレーム時刻。
-fn evenly_spaced_frame_times(frame_count: u64, duration_ms: u64) -> Vec<u64> {
-    if frame_count == 0 {
-        return Vec::new();
-    }
-    (0..frame_count)
-        .map(|i| i * duration_ms / frame_count)
+        .map(|l| l.parse::<u64>().with_context(|| format!("{} の行が数値ではない: {}", path.display(), l)))
         .collect()
 }
 
@@ -205,22 +161,13 @@ pub fn output_frame_time(k: u64, fps: u32) -> u64 {
 }
 
 /// 録画モードに応じたキャプチャ領域の左上座標の時系列を求める。
+/// ウィンドウ録画は window_rects.jsonl の各時刻の位置、画面全体の録画は原点。
 fn capture_origins(dir: &Path, meta: &RecordingMeta) -> CaptureOrigins {
-    let initial = meta.window_initial_rect.map(|r| vec![(0, r[0], r[1])]);
     match meta.recording_mode.as_deref() {
-        Some("window") => {
-            let history: CaptureOrigins = read_jsonl::<WindowRectSample>(&dir.join(WINDOW_RECTS_FILE))
-                .into_iter()
-                .map(|s| (s.t, s.rect[0], s.rect[1]))
-                .collect();
-            if history.is_empty() {
-                // window_rects.jsonl が無い旧形式は録画開始時の位置で固定
-                initial.unwrap_or_default()
-            } else {
-                history
-            }
-        }
-        Some("area") => initial.unwrap_or_default(),
+        Some("window") => read_jsonl::<WindowRectSample>(&dir.join(WINDOW_RECTS_FILE))
+            .into_iter()
+            .map(|s| (s.t, s.rect[0], s.rect[1]))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -283,18 +230,22 @@ mod tests {
             start_time: "2026-01-01T00:00:00+09:00".into(),
             duration_ms: 1000,
             has_audio: false,
-            monitor_scale: 1.0,
             recording_dir: String::new(),
             recording_mode: Some(mode.into()),
             window_title: None,
             window_initial_rect: rect,
-            frame_count: Some(4),
+            frame_count: 4,
         }
     }
 
     fn write_recording(dir: &Path, meta: &RecordingMeta, events: &str) {
         std::fs::write(dir.join("meta.json"), serde_json::to_string(meta).unwrap()).unwrap();
         std::fs::write(dir.join("events.jsonl"), events).unwrap();
+        std::fs::write(dir.join(FRAME_TIMESTAMPS_FILE), "0
+250
+500
+750
+").unwrap();
     }
 
     fn click_pos(e: &RecordingEvent) -> (f64, f64) {
@@ -332,43 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn test_window_mode_without_history_falls_back_to_initial_rect() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let meta = test_meta("window", Some([100.0, 50.0, 900.0, 650.0]));
-        write_recording(
-            tmp.path(),
-            &meta,
-            r#"{"type":"click","t":100,"btn":"left","x":150,"y":80}"#,
-        );
-        let data = RecordingData::load(tmp.path()).unwrap();
-        assert_eq!(click_pos(&data.events[0]), (50.0, 30.0));
-    }
-
-    #[test]
-    fn test_area_mode_offsets_points_and_rects() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let meta = test_meta("area", Some([200.0, 100.0, 1000.0, 700.0]));
-        write_recording(
-            tmp.path(),
-            &meta,
-            r#"{"type":"click","t":100,"btn":"left","x":250,"y":130}"#,
-        );
-        std::fs::write(
-            tmp.path().join("ui_events.jsonl"),
-            r#"{"type":"ui_focus","t":50,"control":"Edit","name":"","rect":[300,200,400,240]}"#,
-        )
-        .unwrap();
-
-        let data = RecordingData::load(tmp.path()).unwrap();
-        // ui_events も読み込まれ、時刻順に並ぶ
-        match &data.events[0] {
-            RecordingEvent::UiFocus { rect, .. } => assert_eq!(*rect, [100.0, 100.0, 200.0, 140.0]),
-            e => panic!("ui_focus ではない: {:?}", e),
-        }
-        assert_eq!(click_pos(&data.events[1]), (50.0, 30.0));
-    }
-
-    #[test]
     fn test_display_mode_keeps_coordinates() {
         let tmp = tempfile::TempDir::new().unwrap();
         let meta = test_meta("display", None);
@@ -391,16 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_times_fallback_to_evenly_spaced() {
+    fn test_frame_times_shorter_than_frame_count_is_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         write_recording(tmp.path(), &test_meta("display", None), "");
-        let data = RecordingData::load(tmp.path()).unwrap();
-        assert_eq!(data.frame_times, vec![0, 250, 500, 750]);
-
-        // 行数がフレーム数に足りない場合も等間隔にフォールバック
         std::fs::write(tmp.path().join(FRAME_TIMESTAMPS_FILE), "5\n40\n").unwrap();
-        let data = RecordingData::load(tmp.path()).unwrap();
-        assert_eq!(data.frame_times, vec![0, 250, 500, 750]);
+        assert!(RecordingData::load(tmp.path()).is_err());
     }
 
     #[test]

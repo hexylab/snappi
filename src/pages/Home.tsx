@@ -1,7 +1,9 @@
 import { createSignal, For, onMount, Show } from "solid-js";
 import { deleteRecording, getRecordingsList, listWindows } from "../lib/commands";
 import { settingsStore } from "../lib/settingsStore";
-import type { RecordingInfo, RecordingMode, WindowInfo } from "../lib/types";
+import type { RecordingInfo } from "../lib/generated/RecordingInfo";
+import type { RecordingMode } from "../lib/generated/RecordingMode";
+import type { WindowInfo } from "../lib/generated/WindowInfo";
 import RecordingTile from "../components/RecordingTile";
 import SettingsDialog from "../components/SettingsDialog";
 import { ToggleSwitch } from "../components/ui";

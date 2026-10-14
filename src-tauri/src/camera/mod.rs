@@ -1,4 +1,4 @@
-//! カメラ（ズーム・パン）エンジン (Issue #28, #29, #39)。仕様は `docs/camera-spec-v6.md`。
+//! カメラ（ズーム・パン）エンジン。仕様は `docs/camera-spec.md`。
 //!
 //! データの流れ: イベント・画面の変化領域 → `subject`（操作ごとの主役）→ `auto_segments`（ショット =
 //! ZoomSegment 列）→ `camera_track`（各出力フレームの `CameraState`）→ 合成。評価 (`crate::eval`) は `CameraTrack` を検証する。
@@ -179,7 +179,7 @@ pub fn extract_activities(events: &[RecordingEvent], duration_ms: u64) -> Vec<Ac
     activities
 }
 
-/// 仕様 R2: 間隔が `gap_ms` 未満のアクティビティをまとめ、各まとまりの
+/// 間隔が `gap_ms` 未満の操作をまとめ、各まとまりの
 /// `(最初の時刻, 最後の時刻)` を返す。`activities` は時刻順であること。
 pub fn group_activities(activities: &[Activity], gap_ms: u64) -> Vec<(u64, u64)> {
     let mut groups: Vec<(u64, u64)> = Vec::new();

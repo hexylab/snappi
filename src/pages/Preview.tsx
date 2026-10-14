@@ -14,7 +14,11 @@ import {
   showInFolder,
 } from "../lib/commands";
 import { baseName, formatClock, formatDate, FORMAT_OPTIONS, QUALITY_OPTIONS, STRENGTH_OPTIONS } from "../lib/format";
-import type { ExportFormat, ExportProgress, QualityPreset, RecordingInfo, TimelineEvent } from "../lib/types";
+import type { ExportFormat } from "../lib/generated/ExportFormat";
+import type { ExportProgress } from "../lib/generated/ExportProgress";
+import type { QualityPreset } from "../lib/generated/QualityPreset";
+import type { RecordingInfo } from "../lib/generated/RecordingInfo";
+import type { TimelineEvent } from "../lib/generated/TimelineEvent";
 import type { CameraTrack } from "../lib/generated/CameraTrack";
 import type { Project } from "../lib/generated/Project";
 import type { ZoomStrength } from "../lib/generated/ZoomStrength";

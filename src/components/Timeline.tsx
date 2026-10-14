@@ -1,5 +1,5 @@
 import { createMemo, For, Show } from "solid-js";
-import type { TimelineEvent } from "../lib/types";
+import type { TimelineEvent } from "../lib/generated/TimelineEvent";
 import type { ZoomSegment } from "../lib/generated/ZoomSegment";
 import { type EditState, formatTime, resizeSegment, resizeTrim } from "../lib/segments";
 import { formatClock } from "../lib/format";

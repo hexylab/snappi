@@ -1,4 +1,4 @@
-//! カメラトラックの品質メトリクス M1〜M7 (Issue #28, #39)。定義は `docs/camera-spec-v6.md` §8 を参照。
+//! カメラトラックの品質メトリクス M1〜M7。定義は `docs/camera-spec.md` §9 を参照。
 
 use crate::camera::{self, spec, ActivityKind, CameraTrack};
 use crate::recording_data::RecordingData;
@@ -278,12 +278,11 @@ mod tests {
                 start_time: String::new(),
                 duration_ms,
                 has_audio: false,
-                monitor_scale: 1.0,
                 recording_dir: String::new(),
                 recording_mode: None,
                 window_title: None,
                 window_initial_rect: None,
-                frame_count: Some(0),
+                frame_count: 0,
             },
             events,
             frame_times: vec![],

@@ -1,4 +1,4 @@
-//! カメラの評価基盤 (Issue #28)。`snappi-eval` CLI と統合テストから使う。
+//! カメラの評価基盤。`snappi-eval` CLI と統合テストから使う。
 
 pub mod debug_video;
 pub mod expect;

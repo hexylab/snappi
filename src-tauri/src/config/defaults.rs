@@ -15,11 +15,9 @@ impl Default for AppSettings {
 impl Default for RecordingSettings {
     fn default() -> Self {
         Self {
-            hotkey: "Ctrl+Shift+R".to_string(),
             fps: 60,
             capture_system_audio: true,
             capture_microphone: false,
-            max_duration_seconds: 300, // 5 minutes
             recording_mode: RecordingMode::Display,
             record_key_labels: false,
         }

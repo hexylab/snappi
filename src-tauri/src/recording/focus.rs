@@ -10,7 +10,7 @@ pub const WINDOW_EVENTS_FILE: &str = "window_events.jsonl";
 
 /// Track foreground window changes using Windows API polling.
 /// 前面ウィンドウが変わったとき、または前面ウィンドウの矩形が変わったとき（開くアニメーションの
-/// 終わり・移動・リサイズ）に WindowFocus イベントを window_events.jsonl に書く (Issue #39)。
+/// 終わり・移動・リサイズ）に WindowFocus イベントを window_events.jsonl に書く。
 pub fn track_focus(
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,

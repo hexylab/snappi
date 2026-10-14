@@ -1,4 +1,4 @@
-//! 録画ごとの編集内容 `project.json` (Issue #30)。
+//! 録画ごとの編集内容 `project.json`。
 //!
 //! プレビューで編集したズーム区間・トリムを録画ディレクトリに保存し、書き出しもこの内容を使う。
 //! ファイルが無い録画は、自動生成した区間と録画全体のトリムで作る。
@@ -149,12 +149,11 @@ mod tests {
                 start_time: String::new(),
                 duration_ms,
                 has_audio: false,
-                monitor_scale: 1.0,
                 recording_dir: String::new(),
                 recording_mode: None,
                 window_title: None,
                 window_initial_rect: None,
-                frame_count: Some(0),
+                frame_count: 0,
             },
             events,
             frame_times: vec![],

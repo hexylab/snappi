@@ -1,14 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  RecordingInfo,
-  RecordingState,
-  ExportFormat,
-  QualityPreset,
-  ExportProgress,
-  AppSettings,
-  WindowInfo,
-  TimelineEvent,
-} from "./types";
+import type { RecordingInfo } from "./generated/RecordingInfo";
+import type { RecordingState } from "./generated/RecordingState";
+import type { ExportFormat } from "./generated/ExportFormat";
+import type { QualityPreset } from "./generated/QualityPreset";
+import type { AppSettings } from "./generated/AppSettings";
+import type { WindowInfo } from "./generated/WindowInfo";
+import type { TimelineEvent } from "./generated/TimelineEvent";
 import type { ZoomSegment } from "./generated/ZoomSegment";
 import type { CameraTrack } from "./generated/CameraTrack";
 import type { PreviewData } from "./generated/PreviewData";
@@ -48,10 +45,6 @@ export async function exportRecording(
   return invoke("export_recording", { recordingId, format, quality });
 }
 
-export async function getExportProgress(): Promise<ExportProgress | null> {
-  return invoke("get_export_progress");
-}
-
 export async function getSettings(): Promise<AppSettings> {
   return invoke("get_settings");
 }
@@ -62,12 +55,6 @@ export async function saveSettings(newSettings: AppSettings): Promise<void> {
 
 export async function deleteRecording(recordingId: string): Promise<void> {
   return invoke("delete_recording", { recordingId });
-}
-
-export async function getRecordingThumbnail(
-  recordingId: string
-): Promise<string> {
-  return invoke("get_recording_thumbnail", { recordingId });
 }
 
 export async function listWindows(): Promise<WindowInfo[]> {

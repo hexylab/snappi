@@ -1,4 +1,4 @@
-//! 評価シナリオごとの期待値 `expect.json` (Issue #28)。
+//! 評価シナリオごとの期待値 `expect.json`。
 //!
 //! ```json
 //! {
@@ -24,6 +24,8 @@ pub const EXPECT_FILE: &str = "expect.json";
 const DRAFT_MARGIN_MS: u64 = 500;
 /// 下書きで zoomed_in / zoomed_out を置く時間帯の最短長 (ms)
 const DRAFT_MIN_SPAN_MS: u64 = 1000;
+/// 下書きで「遠い移動」とみなす距離（既定倍率のビューポート幅に対する倍数）
+const DRAFT_FAR_JUMP_VIEWPORTS: f64 = 1.5;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Expectation {
@@ -54,7 +56,7 @@ pub enum Check {
     Visible { t_ms: u64, x: f64, y: f64 },
     /// 録画全体での寄る/引くの切り替え回数の上限
     MaxSwitches { max: usize },
-    /// `[from_ms, to_ms]` の間、主役の矩形 `rect` = `[l, t, r, b]` がビューポートに収まっていること (Issue #39)
+    /// `[from_ms, to_ms]` の間、主役の矩形 `rect` = `[l, t, r, b]` がビューポートに収まっていること
     Framed {
         from_ms: u64,
         to_ms: u64,
@@ -62,7 +64,7 @@ pub enum Check {
         #[serde(default = "default_ratio")]
         min_ratio: f64,
     },
-    /// `[from_ms, to_ms]` の間、ビューポートが矩形 `rect`（操作中のウィンドウ）の中に収まっていること (Issue #39)
+    /// `[from_ms, to_ms]` の間、ビューポートが矩形 `rect`（操作中のウィンドウ）の中に収まっていること
     Within {
         from_ms: u64,
         to_ms: u64,
@@ -102,21 +104,21 @@ impl Expectation {
             .collect()
     }
 
-    /// 実録画を評価データに取り込むときの expect.json の下書きを、仕様 R1〜R5 から作る。
+    /// 実録画を評価データに取り込むときの expect.json の下書きを、操作の時刻と位置から作る。
     ///
     /// - クリックごとに、その位置が写っていること（visible）
-    /// - 区間の最初から最後のアクティビティまで寄っていること（zoomed_in, 90%）
+    /// - 操作のまとまり（R3・R4 で前後を延ばした区間）の最初から最後の操作まで寄っていること（zoomed_in, 90%）
     /// - 区間の外で、遷移の余裕を除いた時間帯は全体表示であること（zoomed_out）
     /// - 切り替え回数が区間数の2倍以下であること（max_switches）
     ///
-    /// F5 の「引いてから寄り直す」を許すため、ビューポート幅の `FAR_JUMP_VIEWPORTS` 倍以上
-    /// 離れた移動を含む区間には zoomed_in を置かず、そうした録画には max_switches も置かない。
-    /// シナリオ固有の意図は人が確認して書き足すこと。
+    /// ビューポート幅の `DRAFT_FAR_JUMP_VIEWPORTS` 倍以上離れた移動を含む区間には zoomed_in を置かず、
+    /// そうした録画には max_switches も置かない。下書きなので、主役（framed）・ウィンドウ（within）など
+    /// 「編集者ならこう映す」は人が録画フレームを見て書き足すこと。
     pub fn draft(data: &RecordingData, description: &str) -> Self {
         let (w, h) = (data.width() as f64, data.height() as f64);
         let duration = data.meta.duration_ms;
         let activities = extract_activities(&data.events, duration);
-        let far_jump = w / spec::ZOOM_STANDARD * spec::FAR_JUMP_VIEWPORTS;
+        let far_jump = w / spec::ZOOM_STANDARD * DRAFT_FAR_JUMP_VIEWPORTS;
 
         // R3/R4 に従って区間 [start, end] を作り、隙間が MIN_GAP 未満なら結合する
         let mut segments: Vec<DraftSegment> = Vec::new();
