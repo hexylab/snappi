@@ -6,9 +6,9 @@ use tauri::{
 };
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let start_recording = MenuItem::with_id(app, "start_recording", "Start Recording (Ctrl+Shift+R)", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let start_recording = MenuItem::with_id(app, "start_recording", "録画を開始・停止 (Ctrl+Shift+R)", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "設定", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[&start_recording, &settings, &quit])?;
 
@@ -21,7 +21,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
-        .tooltip("Snappi - Screen Recorder")
+        .tooltip("Snappi")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "start_recording" => {
                 if let Some(window) = app.get_webview_window("main") {

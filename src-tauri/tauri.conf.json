@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "Snappi",
-        "width": 900,
-        "height": 680,
+        "width": 880,
+        "height": 600,
+        "minWidth": 680,
+        "minHeight": 500,
         "resizable": true,
         "decorations": true,
         "center": true

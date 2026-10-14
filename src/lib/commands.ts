@@ -13,6 +13,7 @@ import type { ZoomSegment } from "./generated/ZoomSegment";
 import type { CameraTrack } from "./generated/CameraTrack";
 import type { PreviewData } from "./generated/PreviewData";
 import type { Project } from "./generated/Project";
+import type { ZoomStrength } from "./generated/ZoomStrength";
 
 export async function startRecording(): Promise<void> {
   return invoke("start_recording");
@@ -73,12 +74,36 @@ export async function listWindows(): Promise<WindowInfo[]> {
   return invoke("list_windows");
 }
 
-/** ズーム区間からプレビュー用のカメラトラック（30fps）を求める */
+/**
+ * ズーム区間からプレビュー用のカメラトラック（30fps）を求める。
+ * zoomStrength はこの録画のズーム強さ（null なら project.json・設定の値）
+ */
 export async function getCameraTrack(
   recordingId: string,
   segments: ZoomSegment[],
+  zoomStrength: ZoomStrength | null,
 ): Promise<CameraTrack> {
-  return invoke("get_camera_track", { recordingId, segments });
+  return invoke("get_camera_track", { recordingId, segments, zoomStrength });
+}
+
+/** 自動のズーム区間とトリムを zoomStrength で作る（保存はしない） */
+export async function autoProject(recordingId: string, zoomStrength: ZoomStrength): Promise<Project> {
+  return invoke("auto_project", { recordingId, zoomStrength });
+}
+
+/** ファイルはエクスプローラーで選択した状態で、フォルダはそのまま開く */
+export async function showInFolder(path: string): Promise<void> {
+  return invoke("show_in_folder", { path });
+}
+
+/** ファイルを既定のアプリで開く */
+export async function openFile(path: string): Promise<void> {
+  return invoke("open_file", { path });
+}
+
+/** 録画中はメインウィンドウを小さな録画バーにする（録画には映らない）。false で元に戻す */
+export async function setRecordingBar(enabled: boolean): Promise<void> {
+  return invoke("set_recording_bar", { enabled });
 }
 
 export async function getRecordingEvents(

@@ -1,124 +1,166 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createSignal, Match, onCleanup, onMount, Switch } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
-import RecordingList from "./pages/RecordingList";
+import Home from "./pages/Home";
 import Preview from "./pages/Preview";
-import Settings from "./pages/Settings";
-import RecordingBar from "./components/RecordingBar";
+import RecordingBar, { type BarPhase } from "./components/RecordingBar";
 import {
+  getRecordingState,
+  pauseRecording,
+  resumeRecording,
+  setRecordingBar,
   startRecording,
   stopRecording,
-  getRecordingState,
 } from "./lib/commands";
-import type { RecordingState } from "./lib/types";
 
-type Page = "list" | "preview" | "settings";
+type Page = "home" | "preview";
 
 function App() {
-  const [page, setPage] = createSignal<Page>("list");
-  const [recordingState, setRecordingState] =
-    createSignal<RecordingState>("Idle");
-  const [currentRecordingId, setCurrentRecordingId] = createSignal<
-    string | null
-  >(null);
-  const [elapsed, setElapsed] = createSignal(0);
-  let timerRef: number | undefined;
+  const [page, setPage] = createSignal<Page>("home");
+  const [recordingId, setRecordingId] = createSignal<string | null>(null);
+  /** 録画中ならバーの状態。null なら録画していない */
+  const [bar, setBar] = createSignal<BarPhase | null>(null);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
 
-  onMount(async () => {
-    const state = await getRecordingState();
-    setRecordingState(state);
+  // 経過時間（一時停止中は進めない）
+  const [elapsedMs, setElapsedMs] = createSignal(0);
+  let accumulatedMs = 0;
+  let runningSince: number | null = null;
+  let timer: number | undefined;
+  const tick = () => setElapsedMs(accumulatedMs + (runningSince === null ? 0 : performance.now() - runningSince));
+  const startClock = () => {
+    runningSince = performance.now();
+    clearInterval(timer);
+    timer = window.setInterval(tick, 250);
+  };
+  const stopClock = () => {
+    if (runningSince !== null) accumulatedMs += performance.now() - runningSince;
+    runningSince = null;
+    clearInterval(timer);
+    tick();
+  };
+  onCleanup(() => clearInterval(timer));
 
-    await listen("tray-start-recording", () => handleToggleRecording());
-    await listen("tray-open-settings", () => setPage("settings"));
-    await listen("shortcut-toggle-recording", () => handleToggleRecording());
-  });
+  /** 開始・停止の処理中は次の操作を受け付けない（ショートカットの連打など） */
+  let busy = false;
 
-  const handleToggleRecording = async () => {
-    const state = recordingState();
-    if (state === "Idle") {
-      try {
-        await startRecording();
-        setRecordingState("Recording");
-        setElapsed(0);
-        timerRef = window.setInterval(
-          () => setElapsed((e) => e + 1),
-          1000
-        );
-      } catch (e) {
-        console.error("Failed to start recording:", e);
-      }
-    } else if (state === "Recording" || state === "Paused") {
-      if (timerRef) clearInterval(timerRef);
-      try {
-        const id = await stopRecording();
-        setRecordingState("Idle");
-        setCurrentRecordingId(id);
-        setPage("preview");
-      } catch (e) {
-        console.error("Failed to stop recording:", e);
-        // Reset state so UI doesn't get stuck in Recording mode
-        setRecordingState("Idle");
-      }
+  const start = async () => {
+    setError(null);
+    setSettingsOpen(false);
+    try {
+      // 録画に映らないよう、先にバーにしてから録画を始める
+      await setRecordingBar(true);
+      await startRecording();
+      accumulatedMs = 0;
+      setElapsedMs(0);
+      startClock();
+      setBar("recording");
+    } catch (e) {
+      console.error("start_recording failed:", e);
+      await setRecordingBar(false).catch(() => {});
+      setBar(null);
+      setError(`録画を開始できませんでした: ${e}`);
     }
   };
 
-  return (
-    <div class="min-h-screen bg-slate-900 text-slate-200">
-      <Show
-        when={
-          recordingState() === "Recording" || recordingState() === "Paused"
-        }
-      >
-        <RecordingBar
-          elapsed={elapsed()}
-          isPaused={recordingState() === "Paused"}
-          onStop={handleToggleRecording}
-          onPause={async () => {
-            const { pauseRecording, resumeRecording } = await import(
-              "./lib/commands"
-            );
-            if (recordingState() === "Recording") {
-              await pauseRecording();
-              setRecordingState("Paused");
-              if (timerRef) clearInterval(timerRef);
-            } else {
-              await resumeRecording();
-              setRecordingState("Recording");
-              timerRef = window.setInterval(
-                () => setElapsed((e) => e + 1),
-                1000
-              );
-            }
-          }}
-        />
-      </Show>
+  const stop = async () => {
+    stopClock();
+    setBar("finishing");
+    let id: string | null = null;
+    try {
+      id = await stopRecording();
+    } catch (e) {
+      console.error("stop_recording failed:", e);
+      setError(`録画を保存できませんでした: ${e}`);
+    }
+    await setRecordingBar(false).catch((e) => console.error("set_recording_bar failed:", e));
+    if (id) {
+      setRecordingId(id);
+      setPage("preview");
+    } else {
+      setPage("home");
+    }
+    setBar(null);
+  };
 
-      <Show when={page() === "list"}>
-        <RecordingList
-          onStartRecording={handleToggleRecording}
-          onOpenSettings={() => setPage("settings")}
+  const toggleRecording = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const phase = bar();
+      if (phase === null) await start();
+      else if (phase !== "finishing") await stop();
+    } finally {
+      busy = false;
+    }
+  };
+
+  const togglePause = async () => {
+    try {
+      if (bar() === "recording") {
+        await pauseRecording();
+        stopClock();
+        setBar("paused");
+      } else if (bar() === "paused") {
+        await resumeRecording();
+        startClock();
+        setBar("recording");
+      }
+    } catch (e) {
+      console.error("pause/resume failed:", e);
+    }
+  };
+
+  onMount(async () => {
+    // 前回の録画が残っていたら（画面の再読み込みなど）バーの表示に合わせる
+    const state = await getRecordingState();
+    if (state === "Recording" || state === "Paused") {
+      await setRecordingBar(true).catch(() => {});
+      setBar(state === "Recording" ? "recording" : "paused");
+      if (state === "Recording") startClock();
+    }
+
+    const unlisten = await Promise.all([
+      listen("tray-start-recording", () => void toggleRecording()),
+      listen("shortcut-toggle-recording", () => void toggleRecording()),
+      listen("tray-open-settings", () => {
+        if (bar() !== null) return;
+        setPage("home");
+        setSettingsOpen(true);
+      }),
+    ]);
+    onCleanup(() => unlisten.forEach((u) => u()));
+  });
+
+  return (
+    <Switch>
+      <Match when={bar()}>
+        {(phase) => (
+          <RecordingBar
+            phase={phase()}
+            elapsedMs={elapsedMs()}
+            onPauseToggle={togglePause}
+            onStop={() => void toggleRecording()}
+          />
+        )}
+      </Match>
+      <Match when={page() === "preview" && recordingId()}>
+        {(id) => <Preview recordingId={id()} onBack={() => setPage("home")} />}
+      </Match>
+      <Match when={true}>
+        <Home
+          onStartRecording={() => void toggleRecording()}
           onOpenPreview={(id) => {
-            setCurrentRecordingId(id);
+            setRecordingId(id);
             setPage("preview");
           }}
-          recordingState={recordingState()}
+          settingsOpen={settingsOpen()}
+          onSettingsOpenChange={setSettingsOpen}
+          error={error()}
+          onDismissError={() => setError(null)}
         />
-      </Show>
-
-      <Show when={page() === "preview"}>
-        <Preview
-          recordingId={currentRecordingId()}
-          onClose={() => {
-            setCurrentRecordingId(null);
-            setPage("list");
-          }}
-          onRedo={handleToggleRecording}
-        />
-      </Show>
-
-      <Show when={page() === "settings"}>
-        <Settings onClose={() => setPage("list")} />
-      </Show>
-    </div>
+      </Match>
+    </Switch>
   );
 }
 

@@ -4,32 +4,117 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// 録音する音
+#[derive(Debug, Clone, Copy)]
+pub enum AudioSource {
+    /// PC から出ている音（既定の出力デバイスの WASAPI loopback）
+    System,
+    /// 既定の入力デバイス（マイク）
+    Microphone,
+}
+
+impl AudioSource {
+    /// 録画中に書き出す WAV。停止時に `finalize_audio` が audio.wav にまとめる
+    pub fn file_name(self) -> &'static str {
+        match self {
+            AudioSource::System => "audio_system.wav",
+            AudioSource::Microphone => "audio_mic.wav",
+        }
+    }
+}
+
+/// WAV ヘッダー (44 bytes) より大きければ音が入っている
+fn has_samples(path: &Path) -> bool {
+    std::fs::metadata(path).map(|m| m.len() > 44).unwrap_or(false)
+}
+
+/// 録音した音を audio.wav にまとめる。PC の音とマイクの両方があれば FFmpeg でミックスする。
+/// ミックスできなければ PC の音だけを使う（録画自体は失敗させない）。
+pub fn finalize_audio(dir: &Path) -> Result<()> {
+    let out = dir.join("audio.wav");
+    let system = dir.join(AudioSource::System.file_name());
+    let mic = dir.join(AudioSource::Microphone.file_name());
+    let sources: Vec<&Path> = [system.as_path(), mic.as_path()]
+        .into_iter()
+        .filter(|p| has_samples(p))
+        .collect();
+
+    match sources.as_slice() {
+        [] => {}
+        [only] => std::fs::rename(only, &out)?,
+        _ => {
+            if let Err(e) = mix_wavs(&system, &mic, &out) {
+                log::warn!("PCの音とマイクをミックスできません。PCの音だけを使います: {:#}", e);
+                std::fs::rename(&system, &out)?;
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&system);
+    let _ = std::fs::remove_file(&mic);
+    Ok(())
+}
+
+fn mix_wavs(a: &Path, b: &Path, out: &Path) -> Result<()> {
+    let ffmpeg = crate::export::encoder::find_ffmpeg()?;
+    let mut cmd = std::process::Command::new(ffmpeg);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    // amix は入力数で割って音量を下げるので、volume で戻す
+    let result = cmd
+        .args(["-y", "-i"])
+        .arg(a)
+        .arg("-i")
+        .arg(b)
+        .args([
+            "-filter_complex",
+            "amix=inputs=2:duration=longest:dropout_transition=0,volume=2",
+            "-c:a",
+            "pcm_f32le",
+        ])
+        .arg(out)
+        .output()?;
+    if !result.status.success() {
+        anyhow::bail!("FFmpeg amix failed: {}", String::from_utf8_lossy(&result.stderr));
+    }
+    Ok(())
+}
+
 pub fn capture_audio(
+    source: AudioSource,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     output_dir: &Path,
 ) -> Result<()> {
-    let audio_path = output_dir.join("audio.wav");
-    log::info!("Audio capture thread started");
+    let audio_path = output_dir.join(source.file_name());
+    log::info!("Audio capture thread started: {:?}", source);
 
-    // Use cpal to capture system audio via WASAPI loopback
-    let host = cpal::traits::HostTrait::default_output_device(
-        &cpal::default_host()
-    );
-
-    let device = match host {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    // 出力デバイスに対して input stream を作ると WASAPI loopback になる
+    let device = match source {
+        AudioSource::System => host.default_output_device(),
+        AudioSource::Microphone => host.default_input_device(),
+    };
+    let device = match device {
         Some(dev) => dev,
         None => {
-            log::warn!("No audio output device found, skipping audio capture");
+            log::warn!("No audio device found for {:?}, skipping audio capture", source);
             return Ok(());
         }
     };
 
-    use cpal::traits::DeviceTrait;
-    let config = match device.default_output_config() {
+    let config = match source {
+        AudioSource::System => device.default_output_config(),
+        AudioSource::Microphone => device.default_input_config(),
+    };
+    let config = match config {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to get audio config: {}", e);
+            log::warn!("Failed to get audio config for {:?}: {}", source, e);
             return Ok(());
         }
     };
@@ -50,7 +135,6 @@ pub fn capture_audio(
     use cpal::traits::StreamTrait;
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
-            use cpal::traits::DeviceTrait;
             device.build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -68,7 +152,6 @@ pub fn capture_audio(
             )?
         }
         cpal::SampleFormat::I16 => {
-            use cpal::traits::DeviceTrait;
             device.build_input_stream(
                 &config.into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -104,7 +187,7 @@ pub fn capture_audio(
         }
     }
 
-    log::info!("Audio capture stopped");
+    log::info!("Audio capture stopped: {:?}", source);
     Ok(())
 }
 

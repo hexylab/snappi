@@ -10,6 +10,7 @@ pub mod recording;
 pub mod recording_data;
 pub mod shortcuts;
 pub mod tray;
+pub mod window_bar;
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,7 +18,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
+        .manage(window_bar::WindowBarState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             tray::setup_tray(&handle)?;
@@ -50,6 +53,10 @@ pub fn run() {
             commands::load_project,
             commands::save_project,
             commands::get_preview_data,
+            commands::auto_project,
+            commands::show_in_folder,
+            commands::open_file,
+            commands::set_recording_bar,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
