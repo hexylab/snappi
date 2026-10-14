@@ -22,6 +22,10 @@ npm run tauri dev
 # ※ cargo build --release ではフロントエンドが埋め込まれないため必ず tauri build を使う
 npx tauri build
 
+# 配布用のビルド。ビルドした PC のパス（ユーザー名）を exe から除き、残っていないことと
+# 同梱する FFmpeg の版（src-tauri/ffmpeg/README.txt）を確かめる。配布物は必ずこれで作る
+npm run release
+
 # フロントエンドのみビルド
 npm run build
 

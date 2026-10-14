@@ -9,7 +9,8 @@
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "release": "node scripts/build-release.mjs"
   },
   "license": "MIT",
   "dependencies": {

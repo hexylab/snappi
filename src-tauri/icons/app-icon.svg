@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Snappi のアイコン。npx tauri icon src-tauri/icons/app-icon.svg で各サイズを作る -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f9a54a"/>
+      <stop offset="1" stop-color="#e0790f"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="216" fill="url(#bg)"/>
+  <!-- ファインダーの四隅（画面を切り取る枠＝自動ズーム） -->
+  <g fill="none" stroke="#fff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M220 400V280a60 60 0 0 1 60-60h120"/>
+    <path d="M624 220h120a60 60 0 0 1 60 60v120"/>
+    <path d="M804 624v120a60 60 0 0 1-60 60H624"/>
+    <path d="M400 804H280a60 60 0 0 1-60-60V624"/>
+  </g>
+  <!-- 録画の印 -->
+  <circle cx="478" cy="478" r="128" fill="#fff"/>
+  <!-- カーソル -->
+  <path d="M556 556v210l52-48 38 82 42-20-38-80 72-6z" fill="#14100a" stroke="#fff" stroke-width="26" stroke-linejoin="round"/>
+</svg>

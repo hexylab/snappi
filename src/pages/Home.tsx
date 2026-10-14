@@ -5,6 +5,7 @@ import type { RecordingInfo, RecordingMode, WindowInfo } from "../lib/types";
 import RecordingTile from "../components/RecordingTile";
 import SettingsDialog from "../components/SettingsDialog";
 import { ToggleSwitch } from "../components/ui";
+import logoUrl from "../assets/logo.svg";
 
 interface Props {
   onStartRecording: () => void;
@@ -81,7 +82,10 @@ export default function Home(props: Props) {
   return (
     <div class="flex h-full flex-col">
       <header class="app-header">
-        <span class="text-title">🎬 Snappi</span>
+        <span class="text-title flex items-center gap-2">
+          <img src={logoUrl} alt="" class="size-5" />
+          Snappi
+        </span>
         <span class="flex-1" />
         <button class="btn btn-secondary btn-tight" onClick={() => props.onSettingsOpenChange(true)}>
           ⚙️ 設定
