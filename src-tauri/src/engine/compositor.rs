@@ -62,8 +62,8 @@ pub struct Compositor {
     style: OutputStyle,
     screen_width: f64,
     screen_height: f64,
-    /// Cached background image (same every frame)
-    cached_background: Option<RgbaImage>,
+    /// 背景と影を描いたキャンバス（毎フレーム同じなので最初に使うときに 1 回だけ作る）
+    base_canvas: std::sync::OnceLock<RgbaImage>,
     /// 形状ごとのカーソルスプライト
     arrow_sprite: CursorSprite,
     ibeam_sprite: CursorSprite,
@@ -97,7 +97,7 @@ impl Compositor {
             style,
             screen_width: screen_width as f64,
             screen_height: screen_height as f64,
-            cached_background: None,
+            base_canvas: std::sync::OnceLock::new(),
             arrow_sprite: CursorSprite { image: arrow_image, hotspot: arrow_hotspot },
             ibeam_sprite: create_ibeam_sprite(),
             hand_sprite: create_hand_sprite(),
@@ -121,8 +121,52 @@ impl Compositor {
     }
 
     /// 1 フレームを合成する。`camera` はカメラトラックのこのフレームの状態（フレーム内にクランプ済み）。
+    /// 動きのブレが有効なら直前に合成したフレームと混ぜるので、フレームは時刻順に渡すこと。
     pub fn compose_frame(
         &mut self,
+        raw_frame: &RgbaImage,
+        frame_time_ms: u64,
+        camera: CameraState,
+        cursor_pos: Option<(f64, f64)>,
+        cursor_kind: CursorKind,
+        click_effects: &[ClickEffect],
+        key_overlay: Option<&KeyOverlay>,
+    ) -> RgbaImage {
+        let mut canvas =
+            self.render(raw_frame, frame_time_ms, camera, cursor_pos, cursor_kind, click_effects, key_overlay);
+
+        // Motion blur: blend with previous frame when viewport is moving fast
+        if self.motion_blur_enabled {
+            if let (Some(ref prev_frame), Some(prev)) = (&self.prev_output, self.prev_camera) {
+                if prev_frame.dimensions() == canvas.dimensions() {
+                    let dx = (camera.center_x - prev.center_x) / self.screen_width;
+                    let dy = (camera.center_y - prev.center_y) / self.screen_height;
+                    let dz = (camera.zoom - prev.zoom).abs();
+                    let motion = (dx * dx + dy * dy).sqrt() + dz;
+
+                    // Only apply blur when motion exceeds threshold
+                    if motion > 0.005 {
+                        let blend_amount = (motion * 3.0).min(0.35);
+                        motion_blur_blend(&mut canvas, prev_frame, blend_amount);
+                    }
+                }
+            }
+
+            self.prev_camera = Some(camera);
+            self.prev_output = Some(canvas.clone());
+        }
+
+        canvas
+    }
+
+    /// 動きのブレが有効か（有効ならフレームを `compose_frame` で時刻順に合成する必要がある）
+    pub fn motion_blur_enabled(&self) -> bool {
+        self.motion_blur_enabled
+    }
+
+    /// 動きのブレを除いた 1 フレームの合成。前後のフレームに依らないので、複数のフレームを並列に合成できる。
+    pub fn render(
+        &self,
         raw_frame: &RgbaImage,
         frame_time_ms: u64,
         camera: CameraState,
@@ -201,62 +245,44 @@ impl Compositor {
             apply_rounded_corners_aa(&mut output, self.style.border_radius);
         }
 
-        // (7) Shadow + background composition (with caching)
-        let canvas = self.get_or_create_background();
-        let mut canvas = canvas.clone();
-
-        let offset_x = (self.style.canvas_width - self.style.output_width) / 2;
-        let offset_y = (self.style.canvas_height - self.style.output_height) / 2;
-
-        // Draw rounded-rectangle shadow (matches border_radius)
-        draw_drop_shadow(
-            &mut canvas,
-            offset_x,
-            offset_y,
-            self.style.output_width,
-            self.style.output_height,
-            self.style.shadow_blur,
-            self.style.shadow_offset_y,
-            &self.style.shadow_color,
-            self.style.border_radius,
-        );
-
-        // Composite the output frame onto the canvas
+        // (7) 背景と影の上に重ねる
+        let mut canvas = self.base_canvas().clone();
+        let (offset_x, offset_y) = self.output_offset();
         composite(&mut canvas, &output, offset_x, offset_y);
-
-        // Motion blur: blend with previous frame when viewport is moving fast
-        if self.motion_blur_enabled {
-            if let (Some(ref prev_frame), Some(prev)) = (&self.prev_output, self.prev_camera) {
-                if prev_frame.dimensions() == canvas.dimensions() {
-                    let dx = (camera.center_x - prev.center_x) / self.screen_width;
-                    let dy = (camera.center_y - prev.center_y) / self.screen_height;
-                    let dz = (camera.zoom - prev.zoom).abs();
-                    let motion = (dx * dx + dy * dy).sqrt() + dz;
-
-                    // Only apply blur when motion exceeds threshold
-                    if motion > 0.005 {
-                        let blend_amount = (motion * 3.0).min(0.35);
-                        motion_blur_blend(&mut canvas, prev_frame, blend_amount);
-                    }
-                }
-            }
-
-            self.prev_camera = Some(camera);
-            self.prev_output = Some(canvas.clone());
-        }
 
         canvas
     }
 
-    fn get_or_create_background(&mut self) -> &RgbaImage {
-        if self.cached_background.is_none() {
-            self.cached_background = Some(create_background_image(
+    /// キャンバス上の画面（出力フレーム）の左上の位置
+    fn output_offset(&self) -> (u32, u32) {
+        (
+            (self.style.canvas_width - self.style.output_width) / 2,
+            (self.style.canvas_height - self.style.output_height) / 2,
+        )
+    }
+
+    /// 背景に画面の影（角丸に合わせた形）を描いたキャンバス
+    fn base_canvas(&self) -> &RgbaImage {
+        self.base_canvas.get_or_init(|| {
+            let mut canvas = create_background_image(
                 self.style.canvas_width,
                 self.style.canvas_height,
                 &self.style.background,
-            ));
-        }
-        self.cached_background.as_ref().unwrap()
+            );
+            let (offset_x, offset_y) = self.output_offset();
+            draw_drop_shadow(
+                &mut canvas,
+                offset_x,
+                offset_y,
+                self.style.output_width,
+                self.style.output_height,
+                self.style.shadow_blur,
+                self.style.shadow_offset_y,
+                &self.style.shadow_color,
+                self.style.border_radius,
+            );
+            canvas
+        })
     }
 }
 
@@ -322,6 +348,31 @@ fn crop_and_scale(
 ) -> RgbaImage {
     let mut out = RgbaImage::new(out_w, out_h);
     if src.width() == 0 || src.height() == 0 || w <= 0.0 || h <= 0.0 || out_w == 0 || out_h == 0 {
+        return out;
+    }
+
+    // 等倍で整数位置の切り抜き（全体表示で出力が元と同じ大きさのとき）は、補間しても元の画素
+    // そのものになるので行ごとにコピーする
+    if w == out_w as f64
+        && h == out_h as f64
+        && x.fract() == 0.0
+        && y.fract() == 0.0
+        && x >= 0.0
+        && y >= 0.0
+        && x + w <= src.width() as f64
+        && y + h <= src.height() as f64
+    {
+        let (x, y) = (x as usize, y as usize);
+        let src_row_len = src.width() as usize * 4;
+        let row_len = out_w as usize * 4;
+        let src_raw = src.as_raw();
+        out.as_mut()
+            .par_chunks_mut(row_len)
+            .enumerate()
+            .for_each(|(oy, row)| {
+                let start = (y + oy) * src_row_len + x * 4;
+                row.copy_from_slice(&src_raw[start..start + row_len]);
+            });
         return out;
     }
 
@@ -883,21 +934,41 @@ fn dist_to_rounded_rect(
     }
 }
 
+/// `overlay` を `canvas` の (offset_x, offset_y) にアルファ合成する。
+/// 不透明な画素は `blend_pixel` の結果が元の画素そのものになるのでコピーで済ませる。
 fn composite(canvas: &mut RgbaImage, overlay: &RgbaImage, offset_x: u32, offset_y: u32) {
-    for y in 0..overlay.height() {
-        for x in 0..overlay.width() {
-            let cx = x + offset_x;
-            let cy = y + offset_y;
-            if cx < canvas.width() && cy < canvas.height() {
-                let src = overlay.get_pixel(x, y);
-                if src[3] > 0 {
-                    let dst = canvas.get_pixel(cx, cy);
-                    let blended = blend_pixel(*dst, *src);
-                    canvas.put_pixel(cx, cy, blended);
+    let w = overlay.width().min(canvas.width().saturating_sub(offset_x)) as usize;
+    let h = overlay.height().min(canvas.height().saturating_sub(offset_y)) as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let canvas_row_len = canvas.width() as usize * 4;
+    let overlay_row_len = overlay.width() as usize * 4;
+    let overlay_raw = overlay.as_raw();
+    let x0 = offset_x as usize * 4;
+    canvas
+        .as_mut()
+        .par_chunks_mut(canvas_row_len)
+        .skip(offset_y as usize)
+        .take(h)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let src_row = &overlay_raw[y * overlay_row_len..y * overlay_row_len + w * 4];
+            let dst_row = &mut row[x0..x0 + w * 4];
+            for (dst, src) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+                match src[3] {
+                    0 => {}
+                    255 => dst.copy_from_slice(src),
+                    _ => {
+                        let blended = blend_pixel(
+                            Rgba([dst[0], dst[1], dst[2], dst[3]]),
+                            Rgba([src[0], src[1], src[2], src[3]]),
+                        );
+                        dst.copy_from_slice(&blended.0);
+                    }
                 }
             }
-        }
-    }
+        });
 }
 
 /// Blend current frame with previous frame for motion blur effect.
@@ -1225,5 +1296,55 @@ mod tests {
         // Far away should be outside (positive)
         let d = signed_distance_to_polygon(&triangle, 50.0, 50.0);
         assert!(d > 0.0, "Far away should be outside: {}", d);
+    }
+
+    #[test]
+    fn test_crop_and_scale_integer_crop_copies_pixels() {
+        // 等倍・整数位置の切り抜きは元の画素そのもの
+        let src = RgbaImage::from_fn(8, 6, |x, y| Rgba([(x * 30) as u8, (y * 40) as u8, 7, 255]));
+        let out = crop_and_scale(&src, 2.0, 1.0, 4.0, 3.0, 4, 3);
+        for (x, y, p) in out.enumerate_pixels() {
+            assert_eq!(*p, *src.get_pixel(x + 2, y + 1));
+        }
+    }
+
+    #[test]
+    fn test_composite_matches_blend_pixel() {
+        // 不透明（コピー）・透明（そのまま）・半透明（合成）のどれも blend_pixel と同じ結果になる
+        let canvas = RgbaImage::from_fn(6, 4, |x, y| Rgba([10 * x as u8, 20 * y as u8, 200, 255]));
+        let overlay = RgbaImage::from_fn(3, 2, |x, y| {
+            let alpha = [255u8, 0, 128][x as usize];
+            Rgba([90, 60 + y as u8, 30, alpha])
+        });
+        let mut out = canvas.clone();
+        composite(&mut out, &overlay, 2, 1);
+        for (x, y, p) in out.enumerate_pixels() {
+            let dst = *canvas.get_pixel(x, y);
+            let expected = if (2..5).contains(&x) && (1..3).contains(&y) {
+                let src = *overlay.get_pixel(x - 2, y - 1);
+                if src[3] > 0 { blend_pixel(dst, src) } else { dst }
+            } else {
+                dst
+            };
+            assert_eq!(*p, expected, "({}, {})", x, y);
+        }
+    }
+
+    #[test]
+    fn test_render_matches_compose_frame_without_motion_blur() {
+        let style = OutputStyle {
+            output_width: 32,
+            output_height: 18,
+            canvas_width: 48,
+            canvas_height: 34,
+            ..OutputStyle::default()
+        };
+        let raw = RgbaImage::from_fn(64, 36, |x, y| Rgba([x as u8 * 4, y as u8 * 7, 90, 255]));
+        let camera = CameraState { center_x: 30.0, center_y: 20.0, zoom: 1.6 };
+        let mut compositor = Compositor::new(style, 64, 36);
+        let rendered = compositor.render(&raw, 0, camera, Some((30.0, 20.0)), CursorKind::Arrow, &[], None);
+        let composed = compositor.compose_frame(&raw, 0, camera, Some((30.0, 20.0)), CursorKind::Arrow, &[], None);
+        assert_eq!(rendered, composed);
+        assert_eq!(rendered.dimensions(), (48, 34));
     }
 }

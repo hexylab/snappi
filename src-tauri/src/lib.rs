@@ -45,6 +45,7 @@ pub fn run() {
             commands::get_recording_state,
             commands::get_recordings_list,
             commands::export_recording,
+            commands::cancel_export,
             commands::get_settings,
             commands::save_settings,
             commands::delete_recording,

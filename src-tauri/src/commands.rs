@@ -6,6 +6,7 @@ use crate::camera::{self, CameraConfig, CameraTrack, ZoomSegment, ZoomStrength};
 use crate::export::preview::PreviewData;
 use crate::project::Project;
 use crate::recording_data::RecordingData;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// プレビュー用カメラトラックの fps
@@ -16,6 +17,8 @@ pub struct AppState {
     pub recording_state: Mutex<RecordingState>,
     pub settings: Mutex<AppSettings>,
     pub export_progress: Arc<Mutex<Option<ExportProgress>>>,
+    /// 書き出し中に立てると、書き出しを中止する
+    pub export_cancel: Arc<AtomicBool>,
     pub current_session: Mutex<Option<crate::recording::session::RecordingSession>>,
 }
 
@@ -71,6 +74,7 @@ impl Default for AppState {
             recording_state: Mutex::new(RecordingState::Idle),
             settings: Mutex::new(load_settings_from_disk()),
             export_progress: Arc::new(Mutex::new(None)),
+            export_cancel: Arc::new(AtomicBool::new(false)),
             current_session: Mutex::new(None),
         }
     }
@@ -199,6 +203,8 @@ pub async fn export_recording(
         });
     }
     let export_progress = state.export_progress.clone();
+    let cancel = state.export_cancel.clone();
+    cancel.store(false, Ordering::SeqCst);
     let handle = app_handle;
 
     // Fire-and-forget: tokio::spawn returns immediately, heavy work runs in background
@@ -229,6 +235,7 @@ pub async fn export_recording(
                 &quality,
                 &settings,
                 Some(&progress_cb),
+                &cancel,
             )
         }).await;
 
@@ -240,6 +247,10 @@ pub async fn export_recording(
             Ok(Ok(path)) => {
                 let _ = handle.emit("export-complete", serde_json::json!({ "output_path": path }));
             }
+            Ok(Err(e)) if e.is::<crate::export::encoder::Cancelled>() => {
+                log::info!("Export cancelled");
+                let _ = handle.emit("export-cancelled", ());
+            }
             Ok(Err(e)) => {
                 let _ = handle.emit("export-error", serde_json::json!({ "message": e.to_string() }));
             }
@@ -250,6 +261,16 @@ pub async fn export_recording(
     });
 
     log::info!("export_recording command returned immediately (background task spawned)");
+    Ok(())
+}
+
+/// 書き出しを中止する。中止が終わると `export-cancelled` を送る（書き出し中でなければ何もしない）
+#[tauri::command]
+pub fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
+    let exporting = state.export_progress.lock().map_err(|e| e.to_string())?.is_some();
+    if exporting {
+        state.export_cancel.store(true, Ordering::SeqCst);
+    }
     Ok(())
 }
 
