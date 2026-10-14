@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   autoProject,
+  cancelExport,
   exportRecording,
   getCameraTrack,
   getPreviewData,
@@ -73,6 +74,7 @@ export default function Preview(props: Props) {
 
   const [exportProgress, setExportProgress] = createSignal<ExportProgress | null>(null);
   const [exportedPath, setExportedPath] = createSignal<string | null>(null);
+  const [cancelling, setCancelling] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const exporting = () => exportProgress() !== null;
 
@@ -210,6 +212,10 @@ export default function Preview(props: Props) {
         setExportProgress(null);
         setError(`書き出せませんでした: ${event.payload.message}`);
       }),
+      listen("export-cancelled", () => {
+        setExportProgress(null);
+        setCancelling(false);
+      }),
     ]);
   });
 
@@ -223,11 +229,18 @@ export default function Preview(props: Props) {
     setPlaying(false);
     setError(null);
     setExportedPath(null);
+    setCancelling(false);
     setExportProgress({ stage: "starting", progress: 0, output_path: null });
     try {
       // 書き出しは project.json を読むので、編集内容を先に保存する
       await saveNow();
       if (saveState() === "error") throw new Error("編集内容を保存できませんでした");
+      // 保存の間に中止されたら書き出しを始めない
+      if (cancelling()) {
+        setExportProgress(null);
+        setCancelling(false);
+        return;
+      }
       await exportRecording(props.recordingId, format(), quality());
     } catch (e) {
       setError(`書き出せませんでした: ${e}`);
@@ -235,8 +248,19 @@ export default function Preview(props: Props) {
     }
   };
 
+  const handleCancelExport = async () => {
+    setCancelling(true);
+    try {
+      await cancelExport();
+    } catch (e) {
+      setCancelling(false);
+      setError(`中止できませんでした: ${e}`);
+    }
+  };
+
   const progressPercent = () => Math.round((exportProgress()?.progress ?? 0) * 100);
   const progressLabel = () => {
+    if (cancelling()) return "中止しています…";
     switch (exportProgress()?.stage) {
       case "composing":
         return `動画を作成しています… ${progressPercent()}%`;
@@ -457,6 +481,9 @@ export default function Preview(props: Props) {
               <div class="meter-track">
                 <div class="meter-fill" style={{ width: `${progressPercent()}%` }} />
               </div>
+              <button class="btn btn-secondary btn-tight" onClick={handleCancelExport} disabled={cancelling()}>
+                中止
+              </button>
             </div>
           </Show>
           <Show when={exportedPath()}>

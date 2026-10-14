@@ -1,6 +1,6 @@
 {
   "name": "snappi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Screen Studio-level screen recorder for Windows",
   "type": "module",
   "scripts": {

@@ -98,6 +98,11 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
               → Compositor（CameraState のビューポートで切り抜き・カーソル等を合成）→ FFmpeg → MP4/GIF/WebM
 ```
 
+書き出し（`export/encoder.rs`）は CPU だけで速く動くようにしている。合成は数フレームずつ並列に行い
+（動きのブレが有効なときだけ順に）、前と同じ絵になるフレームは合成し直さない。合成したフレームは一時ファイルを
+介さず rawvideo で FFmpeg の標準入力に流し、エンコードと並行して進める。中止は `cancel_export`。
+速くするための変更は合成の結果を変えないこと（`Compositor::render` と `compose_frame` は同じ絵を返す）。
+
 ### UI
 
 - 見た目は `DESIGN.md`（Hexyl Light）に従う。トークンは `src/styles.css` の `@theme` / `:root` にだけ書き、

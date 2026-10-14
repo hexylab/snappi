@@ -45,6 +45,11 @@ export async function exportRecording(
   return invoke("export_recording", { recordingId, format, quality });
 }
 
+/** 書き出しを中止する。中止が終わると "export-cancelled" イベントが届く */
+export async function cancelExport(): Promise<void> {
+  return invoke("cancel_export");
+}
+
 export async function getSettings(): Promise<AppSettings> {
   return invoke("get_settings");
 }
