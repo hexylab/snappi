@@ -15,6 +15,9 @@ pub mod window_bar;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // log::warn! などを標準エラーに出す（RUST_LOG で変えられる）
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("snappi=info,snappi_lib=info,warn"))
+        .try_init();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

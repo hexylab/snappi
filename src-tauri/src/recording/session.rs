@@ -106,8 +106,9 @@ impl RecordingSession {
             let running = self.is_running.clone();
             let paused = self.is_paused.clone();
             let dir = self.recording_dir.clone();
+            let clock = self.clock.clone();
             handles.push(std::thread::spawn(move || {
-                if let Err(e) = super::audio::capture_audio(source, running, paused, &dir) {
+                if let Err(e) = super::audio::capture_audio(source, running, paused, &dir, clock) {
                     log::error!("Audio capture error ({:?}): {}", source, e);
                 }
             }));

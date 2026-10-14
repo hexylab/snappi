@@ -49,8 +49,11 @@ pub fn enter(window: &WebviewWindow, state: &WindowBarState) -> tauri::Result<()
     if let Some(monitor) = window.current_monitor()? {
         let scale = monitor.scale_factor();
         let width = (BAR_WIDTH * scale).round() as i32;
-        let x = monitor.position().x + (monitor.size().width as i32 - width) / 2;
-        let y = monitor.position().y + (BAR_TOP_MARGIN * scale).round() as i32;
+        // 枠なしでもウィンドウの外形には見えない縁が含まれるので、その分ずらして中身を中央に置く
+        let (outer, inner) = (window.outer_position()?, window.inner_position()?);
+        let (dx, dy) = (inner.x - outer.x, inner.y - outer.y);
+        let x = monitor.position().x + (monitor.size().width as i32 - width) / 2 - dx;
+        let y = monitor.position().y + (BAR_TOP_MARGIN * scale).round() as i32 - dy;
         window.set_position(PhysicalPosition::new(x, y))?;
     }
     window.show()?;

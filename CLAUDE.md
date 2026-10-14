@@ -123,7 +123,8 @@ set "PATH=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64;%PATH%"
 録画中は3スレッドが並行動作。`Arc<AtomicBool>`でpause/stopを制御:
 - **capture**: Windows GDI BitBltで画面キャプチャ → JPEG保存（変換・保存はワーカースレッド。開発ビルドでも 30fps 以上を保つため `[profile.dev]` は opt-level 1）
 - **events**: rdevでグローバルマウス/キーフック → JSONL
-- **audio**: cpal で PC の音（WASAPI loopback）とマイクを別々の WAV に録り、停止時に `audio.wav` にまとめる（両方なら FFmpeg でミックス）
+- **audio**: cpal で PC の音（WASAPI loopback）とマイクを別々の WAV に録り、停止時に `audio.wav` にまとめる（両方なら FFmpeg でミックス）。
+  loopback は PC が無音の間データを送ってこないので、`RecordingClock` に合わせて欠けを無音で埋め、映像とずれないようにする
 
 ### IPC構造
 
