@@ -91,7 +91,7 @@ npm run release
 `npm run release` は、ビルドした PC のパス（ユーザー名を含む）が exe に残らないようにしてビルドし、残っていないことを確かめます。
 配布するものは `npx tauri build` ではなく、必ずこちらで作ってください。
 
-構成や設計は [CLAUDE.md](CLAUDE.md)、カメラの仕様は [docs/camera-spec-v6.md](docs/camera-spec-v6.md)、見た目のルールは [DESIGN.md](DESIGN.md) にあります。
+構成や設計は [CLAUDE.md](CLAUDE.md)、カメラの仕様は [docs/camera-spec.md](docs/camera-spec.md)、見た目のルールは [DESIGN.md](DESIGN.md) にあります。
 
 ## ライセンス
 

@@ -254,12 +254,6 @@ pub async fn export_recording(
 }
 
 #[tauri::command]
-pub fn get_export_progress(state: State<'_, AppState>) -> Result<Option<ExportProgress>, String> {
-    let progress = state.export_progress.lock().map_err(|e| e.to_string())?;
-    Ok(progress.clone())
-}
-
-#[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     Ok(settings.clone())
@@ -279,11 +273,6 @@ pub fn save_settings(
 #[tauri::command]
 pub fn delete_recording(recording_id: String) -> Result<(), String> {
     crate::recording::session::delete_recording(&recording_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_recording_thumbnail(recording_id: String) -> Result<String, String> {
-    crate::export::encoder::generate_thumbnail(&recording_id).map_err(|e| e.to_string())
 }
 
 /// ズーム区間からプレビュー用のカメラトラック（30fps）を求める。
@@ -307,8 +296,7 @@ pub fn get_camera_track(
 /// プレビューの「ズームの強さ」「自動に戻す」で使う。
 #[tauri::command]
 pub fn auto_project(recording_id: String, zoom_strength: ZoomStrength) -> Result<Project, String> {
-    let mut data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
-    data.ensure_changes();
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
     let mut project = Project::auto(&data, zoom_strength);
     project.zoom_strength = Some(zoom_strength);
     Ok(project)
@@ -376,11 +364,10 @@ fn zoom_strength_setting(state: &State<'_, AppState>) -> Result<ZoomStrength, St
 /// 録画の編集内容（project.json）を読む。無ければ自動生成した区間で作って保存する。
 #[tauri::command]
 pub fn load_project(recording_id: String, state: State<'_, AppState>) -> Result<Project, String> {
-    let mut data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
+    let data = RecordingData::load_by_id(&recording_id).map_err(|e| e.to_string())?;
     if let Some(project) = Project::load(&data.dir).map_err(|e| e.to_string())? {
         return Ok(project);
     }
-    data.ensure_changes();
     let project = Project::auto(&data, zoom_strength_setting(&state)?);
     project.save(&data.dir).map_err(|e| e.to_string())?;
     log::info!("Created {} for recording {}", crate::project::PROJECT_FILE, recording_id);
@@ -513,33 +500,6 @@ mod tests {
         assert_eq!(deserialized.recording.fps, settings.recording.fps);
         assert_eq!(deserialized.effects.zoom_strength, crate::config::ZoomStrength::Strong);
         assert_eq!(deserialized.effects.click_ring_enabled, settings.effects.click_ring_enabled);
-    }
-
-    /// 旧バージョンの settings.json（ズーム関連の旧項目あり）も読み込めること
-    #[test]
-    fn test_legacy_settings_are_migrated() {
-        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-        let effects = serde_json::json!({
-            "auto_zoom_enabled": false,
-            "default_zoom_level": 2.0,
-            "max_zoom": 2.0,
-            "zoom_intensity": "Balanced",
-            "animation_speed": "Mellow",
-            "frame_diff_enabled": true,
-            "click_ring_enabled": false,
-            "key_badge_enabled": true,
-            "cursor_smoothing": true,
-        });
-        value["effects"] = effects.clone();
-        let loaded: AppSettings = serde_json::from_value(value.clone()).expect("deserialize legacy");
-        assert_eq!(loaded.effects.zoom_strength, crate::config::ZoomStrength::Off);
-        assert!(!loaded.effects.click_ring_enabled);
-        assert!(!loaded.effects.motion_blur_enabled);
-
-        // auto_zoom_enabled: true（既定）は既定のズーム強さになる
-        value["effects"]["auto_zoom_enabled"] = serde_json::json!(true);
-        let loaded: AppSettings = serde_json::from_value(value).expect("deserialize legacy");
-        assert_eq!(loaded.effects.zoom_strength, crate::config::ZoomStrength::Standard);
     }
 
     #[test]

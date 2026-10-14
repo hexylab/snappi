@@ -1,4 +1,4 @@
-//! ズーム区間の自動生成 (Issue #29, #39)。仕様 `docs/camera-spec-v6.md` §4〜§5。
+//! ズーム区間の自動生成。仕様 `docs/camera-spec.md` §5〜§6。
 //!
 //! 編集者の考え方で「ショット」を決める:
 //! 1. 操作ごとの主役（`subject`）を時間順にまとめ、余白付きで収まる大きさで寄る（S3）
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub enum FocusMode {
-    /// カーソル・入力位置を追従する（v5 の F1。旧 project.json 互換）
+    /// カーソル・入力位置を追従する（仕様 F1。手動で追加した区間はこれを使う）
     Auto,
     /// 枠の中心（キャプチャ領域基準の px）。自動生成したショットはこれを使う
     Fixed { x: f64, y: f64 },

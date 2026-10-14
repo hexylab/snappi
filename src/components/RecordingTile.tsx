@@ -1,7 +1,7 @@
 import { createSignal, Show } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { formatClock, formatDate } from "../lib/format";
-import type { RecordingInfo } from "../lib/types";
+import type { RecordingInfo } from "../lib/generated/RecordingInfo";
 
 interface Props {
   recording: RecordingInfo;

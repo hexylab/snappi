@@ -44,7 +44,7 @@ struct PendingFrame {
     height: u32,
 }
 
-/// フレームの変換と JPEG 保存を複数のワーカースレッドで行う (Issue #39)。
+/// フレームの変換と JPEG 保存を複数のワーカースレッドで行う。
 ///
 /// キャプチャのスレッドは画面の取り込みだけを行い、保存を待たない。保存が追いつかないときは
 /// `submit` が待つ（キューの長さで上限を決める）ので、フレームレートが落ちてもメモリは増え続けない。
@@ -319,7 +319,6 @@ pub fn capture_window(
                 &mut bmi, DIB_RGB_COLORS,
             );
 
-            // BGRA → RGBA
             // Cleanup GDI objects (but keep screen_dc alive)
             SelectObject(mem_dc, old_bitmap);
             let _ = DeleteObject(bitmap);
@@ -370,112 +369,6 @@ pub fn capture_window(
     _clock: Arc<RecordingClock>,
 ) -> Result<()> {
     Err(anyhow::anyhow!("Window capture is only supported on Windows"))
-}
-
-/// Capture a specific area of the screen using GDI BitBlt.
-pub fn capture_area(
-    is_running: Arc<AtomicBool>,
-    is_paused: Arc<AtomicBool>,
-    output_dir: &Path,
-    fps: u32,
-    area_x: i32,
-    area_y: i32,
-    area_w: i32,
-    area_h: i32,
-    clock: Arc<RecordingClock>,
-) -> Result<()> {
-    log::info!("Area capture started ({},{} {}x{}, {}fps)", area_x, area_y, area_w, area_h, fps);
-
-    let frames_dir = output_dir.join("frames");
-    std::fs::create_dir_all(&frames_dir)?;
-
-    let frame_interval = std::time::Duration::from_nanos(1_000_000_000 / fps as u64);
-    let mut frame_count: u64 = 0;
-
-    // Save dimensions
-    let dims = format!("{}x{}", area_w, area_h);
-    std::fs::write(output_dir.join("dimensions.txt"), &dims)?;
-
-    let timestamps_path = output_dir.join(FRAME_TIMESTAMPS_FILE);
-    let mut ts_writer = std::fs::File::create(&timestamps_path).ok().map(std::io::BufWriter::new);
-
-    #[cfg(windows)]
-    {
-        use windows::Win32::Graphics::Gdi::*;
-        use windows::Win32::Foundation::*;
-
-        unsafe {
-            let screen_dc = GetDC(HWND::default());
-            let mem_dc = CreateCompatibleDC(screen_dc);
-            let bitmap = CreateCompatibleBitmap(screen_dc, area_w, area_h);
-            let old_bitmap = SelectObject(mem_dc, bitmap);
-
-            let mut bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: area_w,
-                    biHeight: -area_h,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: 0,
-                    biSizeImage: (area_w * area_h * 4) as u32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            let buffer_size = (area_w * area_h * 4) as usize;
-            let writer = FrameWriter::new();
-
-            while is_running.load(Ordering::SeqCst) {
-                let frame_start = std::time::Instant::now();
-
-                if is_paused.load(Ordering::SeqCst) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    continue;
-                }
-
-                let t = clock.now_ms();
-                let _ = BitBlt(mem_dc, 0, 0, area_w, area_h, screen_dc, area_x, area_y, SRCCOPY);
-                let mut buffer = vec![0u8; buffer_size];
-
-                GetDIBits(
-                    mem_dc, bitmap, 0, area_h as u32,
-                    Some(buffer.as_mut_ptr() as *mut _),
-                    &mut bmi, DIB_RGB_COLORS,
-                );
-
-                // JPEG への変換・保存はワーカーに任せる（BGRA のまま渡す）
-                let frame_path = frames_dir.join(format!("frame_{:08}.jpg", frame_count));
-                writer.submit(frame_path, Arc::new(buffer), area_w as u32, area_h as u32);
-                if let Some(w) = ts_writer.as_mut() {
-                    let _ = writeln!(w, "{}", t);
-                }
-
-                frame_count += 1;
-
-                let elapsed = frame_start.elapsed();
-                if elapsed < frame_interval {
-                    std::thread::sleep(frame_interval - elapsed);
-                }
-            }
-
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteObject(bitmap);
-            let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(HWND::default(), screen_dc);
-            writer.finish();
-        }
-    }
-
-    if let Some(mut w) = ts_writer {
-        let _ = w.flush();
-    }
-
-    log::info!("Area capture stopped. Total frames: {}", frame_count);
-    std::fs::write(output_dir.join("frame_count.txt"), frame_count.to_string())?;
-
-    Ok(())
 }
 
 /// Capture screen frames using Windows GDI (BitBlt)
@@ -601,7 +494,7 @@ pub fn capture_screen(
 mod tests {
     use super::*;
 
-    /// 実際の画面を 3 秒キャプチャして実効フレームレートを表示する（手動で実行するベンチマーク, Issue #39）。
+    /// 実際の画面を 3 秒キャプチャして実効フレームレートを表示する（手動で実行するベンチマーク）。
     /// `cargo test --lib capture_rate -- --ignored --nocapture`（`--release` を付けると本番ビルドの値）
     #[test]
     #[ignore]

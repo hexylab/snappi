@@ -1,6 +1,6 @@
 import { createRoot, createSignal } from "solid-js";
 import { getSettings, saveSettings } from "./commands";
-import type { AppSettings } from "./types";
+import type { AppSettings } from "./generated/AppSettings";
 
 /**
  * 設定の共有ストア。ホーム（録画の対象・音声）と設定ダイアログが同じ値を見る。
@@ -12,13 +12,6 @@ const store = createRoot(() => {
 
   const load = async () => {
     const s = await getSettings();
-    // 範囲指定は選べなくした (Issue #1)。保存済みなら画面全体に戻す
-    if (s.recording.recording_mode.type === "Area") {
-      const fixed = { ...s, recording: { ...s.recording, recording_mode: { type: "Display" as const } } };
-      setSettings(fixed);
-      await saveSettings(fixed).catch((e) => console.error("save_settings failed:", e));
-      return fixed;
-    }
     setSettings(s);
     return s;
   };

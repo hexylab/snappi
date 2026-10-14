@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { showInFolder } from "../lib/commands";
 import { FORMAT_OPTIONS, QUALITY_OPTIONS, STRENGTH_OPTIONS } from "../lib/format";
 import { createStoredFlag, settingsStore } from "../lib/settingsStore";
-import type { AppSettings } from "../lib/types";
+import type { AppSettings } from "../lib/generated/AppSettings";
 import { Field, OptionCards, SettingRow, ToggleSwitch } from "./ui";
 
 interface Props {

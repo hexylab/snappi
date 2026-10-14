@@ -1,4 +1,4 @@
-//! testdata/recordings/* の全シナリオに M1〜M7 と expect.json を適用する統合テスト (Issue #28)。
+//! testdata/recordings/* の全シナリオに M1〜M7 と expect.json を適用する統合テスト。
 
 use snappi_lib::eval::{self, EVAL_FPS};
 use std::path::PathBuf;

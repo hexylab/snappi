@@ -71,7 +71,7 @@ pub fn export(
     settings: &AppSettings,
     progress: Option<&ProgressFn>,
 ) -> Result<String> {
-    let mut data = RecordingData::load_by_id(recording_id)?;
+    let data = RecordingData::load_by_id(recording_id)?;
 
     log::info!("Starting effects composition for recording {}", recording_id);
     if let Some(cb) = progress { cb("analyzing", 0.0); }
@@ -80,7 +80,6 @@ pub fn export(
         Some(project) => project,
         None => {
             log::info!("project.json が無いため自動生成した区間で書き出す");
-            data.ensure_changes();
             Project::auto(&data, strength)
         }
     };
@@ -354,7 +353,7 @@ fn extract_cursor_shapes(events: &[RecordingEvent]) -> Vec<(u64, CursorKind)> {
         .collect()
 }
 
-/// 時刻 `time_ms` のカーソル形状。記録が無い（旧形式の録画）・最初の記録より前は矢印。
+/// 時刻 `time_ms` のカーソル形状。最初の記録より前（記録が無い場合も）は矢印。
 fn cursor_kind_at_time(shapes: &[(u64, CursorKind)], time_ms: u64) -> CursorKind {
     let idx = shapes.partition_point(|&(t, _)| t <= time_ms);
     if idx == 0 {
@@ -435,23 +434,16 @@ fn find_cursor_at_time(positions: &[(u64, f64, f64)], time_ms: u64) -> Option<(f
 // --- Thumbnail generation ---
 
 pub fn generate_thumbnail(recording_id: &str) -> Result<String> {
-    use crate::recording_data::{frame_path, read_frame_count};
+    let data = RecordingData::load_by_id(recording_id)?;
+    let recording_dir = &data.dir;
+    let target_frame = (data.frame_count().max(1) as f64 * 0.3) as u64;
 
-    let recording_dir = crate::recording_data::recording_dir(recording_id);
-    let meta: crate::config::RecordingMeta =
-        serde_json::from_str(&std::fs::read_to_string(recording_dir.join("meta.json"))?)?;
-
-    let frames_dir = recording_dir.join("frames");
-    let frame_count = read_frame_count(&recording_dir, &meta).max(1);
-    let target_frame = (frame_count as f64 * 0.3) as u64;
-
-    // Try target frame, then fallback to frame 0. frame_path が .jpg/.png を
-    // 解決するので、旧録画（PNG 保存）と新録画（JPEG 保存）の両方に対応する。
-    let target_path = frame_path(&frames_dir, target_frame);
+    // Try target frame, then fallback to frame 0.
+    let target_path = data.frame_path(target_frame);
     let frame_path = if target_path.exists() {
         target_path
     } else {
-        let fallback = frame_path(&frames_dir, 0);
+        let fallback = data.frame_path(0);
         if !fallback.exists() {
             return Err(anyhow::anyhow!("No frames found for thumbnail"));
         }
@@ -761,7 +753,7 @@ mod tests {
         assert_eq!(cursor_kind_at_time(&shapes, 499), CursorKind::IBeam);
         assert_eq!(cursor_kind_at_time(&shapes, 600), CursorKind::Hand);
         assert_eq!(cursor_kind_at_time(&shapes, 1000), CursorKind::Arrow);
-        // 形状の記録が無い旧録画は矢印
+        // 形状の記録が無ければ矢印
         assert_eq!(cursor_kind_at_time(&[], 300), CursorKind::Arrow);
     }
 }

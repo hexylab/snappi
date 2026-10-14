@@ -1,8 +1,8 @@
-//! 画面の変化領域 (Issue #39)。
+//! 画面の変化領域。
 //!
 //! 隣り合う録画フレームの差分をセル単位で求め、まとまって変化した領域を矩形にして
 //! `changes.jsonl` に保存する。カメラはこれを「画面の中で変化が起きている場所」（主役）の
-//! 主な手がかりにする（仕様 `docs/camera-spec-v6.md` §3）。
+//! 主な手がかりにする（仕様 `docs/camera-spec.md` §4）。
 //!
 //! - 1行 = 1フレーム: `{"t":1124,"rects":[[l,t,r,b,cells],...]}`。`t` はそのフレームの録画時刻、
 //!   矩形はひとつ前のフレームから変化した領域（キャプチャ領域基準の px）、`cells` は変化したセル数。
@@ -10,8 +10,6 @@
 //! - フィルタ（ノイズの除去や操作との対応付け）はしない生の信号。使う側（`camera::subject`）で選ぶ。
 //! - frames は大きく評価データにコミットしないため、評価・カメラ計算はこのファイルだけを使う。
 
-use crate::recording_data::{frame_path, read_frame_count};
-use crate::config::RecordingMeta;
 use anyhow::{Context, Result};
 use image::GrayImage;
 use rayon::prelude::*;
@@ -141,24 +139,10 @@ pub fn load(dir: &Path) -> Vec<FrameChange> {
     out
 }
 
-/// changes.jsonl が無く、frames がある録画なら作る。作った（または既にある）なら true。
-pub fn ensure(dir: &Path) -> Result<bool> {
-    if dir.join(CHANGES_FILE).exists() {
-        return Ok(true);
-    }
-    if !dir.join("frames").is_dir() {
-        return Ok(false);
-    }
-    generate(dir)?;
-    Ok(true)
-}
-
 /// 録画のフレームから changes.jsonl を作る（既存のファイルは上書きする）。
 pub fn generate(dir: &Path) -> Result<()> {
-    let meta: RecordingMeta = serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json"))?)?;
     let data = crate::recording_data::RecordingData::load(dir)?;
-    let frames_dir = dir.join("frames");
-    let count = read_frame_count(dir, &meta) as usize;
+    let count = data.frame_count() as usize;
     let started = std::time::Instant::now();
 
     let mut changes = Vec::new();
@@ -167,7 +151,7 @@ pub fn generate(dir: &Path) -> Result<()> {
         let idx: Vec<usize> = (chunk_start..(chunk_start + CHUNK).min(count)).collect();
         let lumas: Vec<Option<GrayImage>> = idx
             .par_iter()
-            .map(|&i| image::open(frame_path(&frames_dir, i as u64)).ok().map(|img| img.to_luma8()))
+            .map(|&i| image::open(data.frame_path(i as u64)).ok().map(|img| img.to_luma8()))
             .collect();
         let pairs: Vec<(usize, Option<&GrayImage>, Option<&GrayImage>)> = idx
             .iter()

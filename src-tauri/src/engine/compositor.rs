@@ -16,7 +16,7 @@ pub const KEY_BADGE_COLOR: [u8; 4] = [30, 30, 30, 200];
 pub const KEY_BADGE_CHAR_WIDTH: u32 = 10;
 pub const KEY_BADGE_PADDING: u32 = 20;
 
-/// Embedded custom cursor PNG (icon/カーソル.png) and its hotspot
+/// 埋め込みのカーソル画像（icon/カーソル.png）とそのホットスポット
 const EMBEDDED_CURSOR_PNG: &[u8] = include_bytes!("../../../icon/カーソル.png");
 const EMBEDDED_CURSOR_HOTSPOT: (u32, u32) = (35, 22);
 

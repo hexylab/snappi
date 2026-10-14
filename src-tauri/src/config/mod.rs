@@ -3,16 +3,17 @@ pub mod defaults;
 pub use crate::camera::ZoomStrength;
 use serde::{Deserialize, Serialize};
 
-// Issue #11: ts-rs 型自動生成
+// ts-rs による TypeScript 型の自動生成
 //
 // `cargo test --features ts-export` を実行すると、`#[cfg_attr(feature = "ts-export", ts(export))]`
 // が付いた構造体から TypeScript 定義が `../src/lib/generated/` に出力される。
 // 通常ビルドではこの機能は無効化されるため、実行時コストはゼロ。
 //
-// 新しい型を追加する際は下の各構造体と同じパターンで `#[cfg_attr(...)]` を追加し、
-// フロントエンド側では `src/lib/generated/` から import する（移行は段階的に）。
+// フロントエンドと受け渡す型には下の各構造体と同じパターンで `#[cfg_attr(...)]` を付ける。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct AppSettings {
     pub recording: RecordingSettings,
     pub style: StyleSettings,
@@ -21,12 +22,12 @@ pub struct AppSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct RecordingSettings {
-    pub hotkey: String,
     pub fps: u32,
     pub capture_system_audio: bool,
     pub capture_microphone: bool,
-    pub max_duration_seconds: u64,
     #[serde(default)]
     pub recording_mode: RecordingMode,
     /// キー入力のラベル（"a", "Return" など）を events.jsonl に平文で記録するか。
@@ -48,12 +49,6 @@ pub enum RecordingMode {
         title: String,
         rect: [f64; 4],
     },
-    Area {
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    },
 }
 
 impl Default for RecordingMode {
@@ -73,6 +68,8 @@ pub struct WindowInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct StyleSettings {
     pub background: BackgroundConfig,
     pub border_radius: u32,
@@ -98,7 +95,8 @@ pub enum BackgroundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(from = "EffectsSettingsFile")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct EffectsSettings {
     /// 自動ズームの強さ（Off で自動ズームしない）
     pub zoom_strength: ZoomStrength,
@@ -108,37 +106,9 @@ pub struct EffectsSettings {
     pub motion_blur_enabled: bool,
 }
 
-/// settings.json の effects の読み込み用。旧バージョンのズーム関連の項目は無視し、
-/// `auto_zoom_enabled: false` だけ `zoom_strength: Off` に移行する。
-#[derive(Deserialize)]
-struct EffectsSettingsFile {
-    zoom_strength: Option<ZoomStrength>,
-    auto_zoom_enabled: Option<bool>,
-    click_ring_enabled: Option<bool>,
-    key_badge_enabled: Option<bool>,
-    cursor_smoothing: Option<bool>,
-    motion_blur_enabled: Option<bool>,
-}
-
-impl From<EffectsSettingsFile> for EffectsSettings {
-    fn from(f: EffectsSettingsFile) -> Self {
-        let d = EffectsSettings::default();
-        let zoom_strength = match (f.zoom_strength, f.auto_zoom_enabled) {
-            (Some(z), _) => z,
-            (None, Some(false)) => ZoomStrength::Off,
-            (None, _) => d.zoom_strength,
-        };
-        Self {
-            zoom_strength,
-            click_ring_enabled: f.click_ring_enabled.unwrap_or(d.click_ring_enabled),
-            key_badge_enabled: f.key_badge_enabled.unwrap_or(d.key_badge_enabled),
-            cursor_smoothing: f.cursor_smoothing.unwrap_or(d.cursor_smoothing),
-            motion_blur_enabled: f.motion_blur_enabled.unwrap_or(d.motion_blur_enabled),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct OutputSettings {
     pub default_format: ExportFormat,
     pub default_quality: QualityPreset,
@@ -165,8 +135,6 @@ pub enum QualityPreset {
 
 /// Metadata about a completed recording session
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct RecordingMeta {
     pub version: u32,
     pub id: String,
@@ -176,18 +144,12 @@ pub struct RecordingMeta {
     pub start_time: String,
     pub duration_ms: u64,
     pub has_audio: bool,
-    pub monitor_scale: f64,
     pub recording_dir: String,
-    #[serde(default)]
     pub recording_mode: Option<String>,
-    #[serde(default)]
     pub window_title: Option<String>,
-    #[serde(default)]
     pub window_initial_rect: Option<[f64; 4]>,
-    /// 録画されたフレーム数。旧バージョンでは frame_count.txt に保存されていた。
-    /// None の場合、リスト表示は frame_count.txt にフォールバックする。
-    #[serde(default)]
-    pub frame_count: Option<u32>,
+    /// 録画されたフレーム数
+    pub frame_count: u32,
 }
 
 /// Lightweight event representation for Timeline UI visualization.
@@ -195,6 +157,7 @@ pub struct RecordingMeta {
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../src/lib/generated/"))]
 pub struct TimelineEvent {
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub time_ms: u64,
     pub event_type: String,
     pub x: Option<f64>,
@@ -318,6 +281,7 @@ impl RecordingEvent {
 pub struct RecordingInfo {
     pub id: String,
     pub date: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub duration_ms: u64,
     pub frame_count: u32,
     pub thumbnail_path: Option<String>,

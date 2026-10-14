@@ -1,4 +1,4 @@
-//! プレビュー画面用のデータ (Issue #30)。
+//! プレビュー画面用のデータ。
 //!
 //! プレビューは `<canvas>` で書き出しと同じ合成（背景・角丸・影・カーソル・クリックリング・キー表示）を
 //! 再現する。そのための時系列・スタイル・カーソル画像を、書き出しと同じ計算
@@ -24,11 +24,9 @@ pub struct PreviewData {
     pub height: u32,
     #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub duration_ms: u64,
-    /// 各フレームの録画時刻 (ms)。frames/frame_{番号:08}.{frame_ext}
+    /// 各フレームの録画時刻 (ms)。frames/frame_{番号:08}.jpg
     #[cfg_attr(feature = "ts-export", ts(type = "Array<number>"))]
     pub frame_times: Vec<u64>,
-    /// フレーム画像の拡張子（新しい録画は "jpg"、旧録画は "png"）
-    pub frame_ext: String,
     /// audio.wav に音声が入っているか
     pub has_audio: bool,
     /// カーソル位置（スムージング済み）。時刻順
@@ -166,11 +164,6 @@ pub fn preview_data(data: &RecordingData, settings: &AppSettings, quality: &Qual
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let frame_ext = data
-        .frame_path(0)
-        .extension()
-        .map(|e| e.to_string_lossy().to_string())
-        .unwrap_or_else(|| "jpg".to_string());
     let has_audio = std::fs::metadata(data.dir.join("audio.wav"))
         .map(|m| m.len() > 44)
         .unwrap_or(false);
@@ -180,7 +173,6 @@ pub fn preview_data(data: &RecordingData, settings: &AppSettings, quality: &Qual
         height: data.height(),
         duration_ms: data.meta.duration_ms,
         frame_times: data.frame_times.clone(),
-        frame_ext,
         has_audio,
         cursor: timeline
             .cursor_positions

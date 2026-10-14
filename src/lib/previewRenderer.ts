@@ -1,5 +1,5 @@
 /**
- * プレビューの合成 (Issue #30)。書き出し（src-tauri/src/engine/compositor.rs）と同じ順序・
+ * プレビューの合成。書き出し（src-tauri/src/engine/compositor.rs）と同じ順序・
  * 同じパラメータ（get_preview_data の PreviewStyle）で canvas に描く:
  * 背景と影 → カメラのビューポートで切り抜いたフレーム → カーソル → クリックリング → キー表示、
  * をすべて角丸の内側に描く。モーションブラーは描かない。
@@ -191,7 +191,7 @@ export class PreviewRenderer {
 
   private frameUrl(index: number): string {
     const padded = String(index).padStart(8, "0");
-    return convertFileSrc(`${this.recordingDir}\\frames\\frame_${padded}.${this.data.frame_ext}`);
+    return convertFileSrc(`${this.recordingDir}\\frames\\frame_${padded}.jpg`);
   }
 
   /** フレームを読み込み済みなら返す。未読み込みなら読み込みを始めて null */
